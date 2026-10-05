@@ -1,0 +1,14 @@
+Live captions on your G2 for when you cannot hear what is being said — BRING YOUR OWN SONIOX API KEY (console.soniox.com, pay-as-you-go). The glasses listen to the people around you, Soniox transcribes in real time, and their words appear on the display within about a second. Turn on translation and the original stays on top, translation below.
+
+REQUIREMENTS
+1. No key, no captions. Soniox real-time costs about $0.12 per hour of listening, translation included, billed to your own account. The developer runs no server.
+2. Audio is streamed to Soniox while listening. Nothing is recorded or stored.
+
+HOW IT WORKS
+- Glasses: long-press = start / pause / resume; double-tap = exit.
+- Any spoken language is recognised; translate into 60 languages, or show the original only.
+- A new line whenever the speaker changes.
+- Stops listening after a quiet period and reconnects when someone speaks, so you only pay while people talk.
+
+Interface in 中文, 日本語 and English.
+Free and open source. Support: https://ko-fi.com/lim0513

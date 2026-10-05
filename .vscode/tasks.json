@@ -1,0 +1,79 @@
+{
+  // Even G2 workspace tasks。改代码不需要这些，只有起服务/构建/打包时用。
+  // 工程名每次会弹框问（默认 my-first-app）；apps/ 下多了工程也不用改这个文件。
+  "version": "2.0.0",
+  "tasks": [
+    {
+      // 主力入口：Ctrl+Shift+P → Tasks: Run Task → 选它。
+      // 端口预检 + 等 dev server 真起来再开模拟器，这两步的逻辑在 eh.mjs 里。
+      // 两个进程都跑在这个终端里，输出用 [vite] / [sim] 前缀区分，Ctrl+C 一起停。
+      "label": "起 dev server + 模拟器（自动化端口 9898）",
+      "type": "shell",
+      "command": "npm",
+      "args": ["run", "sim", "--", "${input:app}", "9898"],
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated" }
+    },
+    {
+      // 默认构建任务：Ctrl+Shift+B 直接跑。tsc 的报错会进 Problems 面板。
+      "label": "build（tsc --noEmit && vite build）",
+      "type": "shell",
+      "command": "npm",
+      "args": ["run", "build", "-w", "${input:app}"],
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$tsc"],
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    {
+      "label": "pack（出 .ehpk）",
+      "type": "shell",
+      "command": "npm",
+      "args": ["run", "pack", "-w", "${input:app}"],
+      "problemMatcher": ["$tsc"],
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    {
+      // 只要 dev server 不要模拟器时用（比如只想看编译报错）。跑在 VS Code 集成终端里。
+      "label": "dev server（只起 vite，集成终端）",
+      "type": "shell",
+      "command": "npm",
+      "args": ["run", "dev", "-w", "${input:app}"],
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "vite",
+        "pattern": { "regexp": "^(.*)$", "file": 1, "location": 1, "message": 1 },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".*building|.*restarting.*",
+          "endsPattern": ".*(ready in|Local:).*"
+        }
+      },
+      "presentation": { "reveal": "always", "panel": "dedicated" }
+    },
+    {
+      // 配合上面那条用：dev server 已经起着时，单独开模拟器。
+      "label": "模拟器（只起 simulator，需 dev server 已在跑）",
+      "type": "shell",
+      "command": "npm",
+      "args": ["run", "simulate", "-w", "${input:app}", "--", "--automation-port", "9898"],
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated" }
+    },
+    {
+      "label": "列出所有工程和端口",
+      "type": "shell",
+      "command": "node",
+      "args": ["${workspaceFolder}/scripts/eh.mjs", "list"],
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared" }
+    }
+  ],
+  "inputs": [
+    {
+      "id": "app",
+      "type": "promptString",
+      "description": "工程名（apps/ 下的目录名）",
+      "default": "my-first-app"
+    }
+  ]
+}

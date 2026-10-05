@@ -1,0 +1,24 @@
+{
+  // 用仓库里装的 TypeScript 5.9.3，而不是 VS Code 自带的那个版本，
+  // 保证编辑器里的报错和 `npm run build` 跑出来的一致。
+  // 首次打开时 VS Code 右下角会问 "Use Workspace Version"，选它。
+  "typescript.tsdk": "node_modules/typescript/lib",
+  "typescript.enablePromptUseWorkspaceTsdk": true,
+
+  // 构建产物和依赖别出现在搜索结果和文件树里
+  "files.exclude": {
+    "**/node_modules": true,
+    "**/dist": true
+  },
+  "search.exclude": {
+    "**/node_modules": true,
+    "**/dist": true,
+    "**/package-lock.json": true
+  },
+
+  // .bat 必须 CRLF（cmd 对 LF 行尾的 bat 行为不可预测），其余文件统一 LF
+  "[bat]": {
+    "files.eol": "\r\n"
+  },
+  "files.eol": "\n"
+}

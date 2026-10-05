@@ -1,0 +1,21 @@
+{
+  "name": "even-g2-plugin-hear",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Hear: live captions and translation on Even Realities G2 smart glasses",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "new": "node scripts/eh.mjs new",
+    "sim": "node scripts/eh.mjs sim",
+    "apps": "node scripts/eh.mjs list",
+    "qr": "node scripts/eh.mjs qr",
+    "test": "npm test -w hear"
+  },
+  "devDependencies": {
+    "@evenrealities/evenhub-cli": "^0.1.14",
+    "@evenrealities/evenhub-simulator": "^0.9.5"
+  },
+  "license": "MIT"
+}

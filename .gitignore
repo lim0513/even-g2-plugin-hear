@@ -1,0 +1,31 @@
+# 依赖和构建产物
+node_modules/
+dist/
+*.ehpk
+
+# 本地配置 —— 里面有服务器地址、邮箱、密码
+# 这一条最要紧：一旦提交进去，密码就进了 git 历史，删文件也删不掉
+.env
+.env.local
+.env.*.local
+
+# vite 的预构建缓存（不是 npm 装的东西，删了会自动重建）
+.vite/
+.vite-temp/
+
+
+# 各种工具留下的日志
+*.log
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+
+# VS Code：任务和设置是团队共享的，个人覆盖不进版本库
+.vscode/*
+!.vscode/tasks.json
+!.vscode/settings.json
+!.vscode/extensions.json
+

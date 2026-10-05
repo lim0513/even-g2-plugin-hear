@@ -1,0 +1,33 @@
+{
+  "package_id": "tech.limeng.hear",
+  "edition": "202601",
+  "name": "Hear",
+  "version": "0.1.2",
+  "min_app_version": "2.2.10",
+  "min_sdk_version": "0.0.15",
+  "entrypoint": "index.html",
+  "permissions": [
+    {
+      "name": "g2-microphone",
+      "desc": "Listens to the people around you through the glasses microphones so their words can be shown as captions. Audio is streamed to Soniox for recognition only while captions are on; nothing is recorded or stored."
+    },
+    {
+      "name": "phone-microphone",
+      "desc": "Alternative to the glasses microphones, for example with the phone on a table in a larger room."
+    },
+    {
+      "name": "network",
+      "desc": "Streams live audio to Soniox (stt-rt.soniox.com) for real-time transcription and optional translation, using your own Soniox API key.",
+      "whitelist": [
+        "wss://stt-rt.soniox.com",
+        "https://stt-rt.soniox.com"
+      ]
+    }
+  ],
+  "supported_languages": [
+    "zh",
+    "ja",
+    "en"
+  ],
+  "tagline": "Live captions + translation. Needs Soniox key"
+}
