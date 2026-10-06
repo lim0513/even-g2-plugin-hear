@@ -63,6 +63,14 @@ export function mountUi(settings: Settings, h: UiHandlers) {
           <p class="hint">${t('translate.hint')}</p>
         </div>
         <div class="field">
+          <label for="tgtSpeech">${t('tgtSpeech')}</label>
+          <select id="tgtSpeech">
+            <option value="on"${sel('on', settings.showTargetSpeech ? 'on' : 'off')}>${t('tgtSpeech.on')}</option>
+            <option value="off"${sel('off', settings.showTargetSpeech ? 'on' : 'off')}>${t('tgtSpeech.off')}</option>
+          </select>
+          <p class="hint">${t('tgtSpeech.hint')}</p>
+        </div>
+        <div class="field">
           <label for="hints">${t('hints')}</label>
           <input id="hints" type="text" autocapitalize="off" spellcheck="false" placeholder="ja, zh" value="${esc(settings.hints)}" />
           <p class="hint">${t('hints.hint')}</p>
@@ -84,14 +92,17 @@ export function mountUi(settings: Settings, h: UiHandlers) {
         </div>
       </section>
 
-      <footer>${t('glasses.help')}<br><span class="dim" style="font-size:11px">v${esc(String(__APP_VERSION__))}</span></footer>
+      <footer>${t('glasses.help')}<br><span id="ver" class="dim" style="font-size:11px">v${esc(String(__APP_VERSION__))}</span><div id="diag" class="diag"${diagOn ? '' : ' hidden'}></div></footer>
     </main>
     <div class="bottom-bar">
       <button id="pause" type="button" class="ghost big">${t('pause')}</button>
       <button id="clear" type="button" class="ghost big">${t('clear')}</button>
     </div>`
 
-  for (const id of ['status', 'note', 'pause']) el[id] = $(id)
+  for (const id of ['status', 'note', 'pause', 'diag']) el[id] = $(id)
+  // 点版本号：开关诊断读数（排查「用久了延迟变高」用，平时不显示）。读数出在版本号下面。
+  // 一度挪到页面顶上、改成点状态标签（以为真机上页底够不着），用户确认 0.1.3 这样看得到，要求保留
+  $('ver').onclick = () => { diagOn = !diagOn; el.diag.hidden = !diagOn; el.diag.textContent = '' }
   $<HTMLButtonElement>('pause').onclick = () => h.onPause()
   $<HTMLButtonElement>('clear').onclick = () => h.onClear()
 
@@ -105,7 +116,8 @@ export function mountUi(settings: Settings, h: UiHandlers) {
   // 不翻译时这个选项不起作用，灰掉免得以为它管用
   const target = $<HTMLSelectElement>('target')
   const showSrc = $<HTMLSelectElement>('showSrc')
-  const syncShowSrc = () => { showSrc.disabled = target.value === '' }
+  const tgtSpeech = $<HTMLSelectElement>('tgtSpeech')
+  const syncShowSrc = () => { showSrc.disabled = tgtSpeech.disabled = target.value === '' }
   target.onchange = syncShowSrc
   syncShowSrc()
   const saved = $('saved')
@@ -118,6 +130,7 @@ export function mountUi(settings: Settings, h: UiHandlers) {
       translate: tv !== '' && LANG_CODES.has(tv),
       target: tv !== '' && LANG_CODES.has(tv) ? tv : settings.target,
       showSource: showSrc.value !== 'off',
+      showTargetSpeech: tgtSpeech.value !== 'off',
       hints: parseHints($<HTMLInputElement>('hints').value).join(', '),
       mic: $<HTMLSelectElement>('mic').value === 'glasses' ? 'glasses' : 'phone',
       quietMin: Math.max(0, Math.min(60, Number($<HTMLInputElement>('quiet').value) || 0)),
@@ -128,6 +141,12 @@ export function mountUi(settings: Settings, h: UiHandlers) {
   }
   injectStyles()
 }
+
+// 开发期 ?diag=1 直接打开（模拟器里点不到手机页）。生产里恒为 false
+let diagOn = import.meta.env.DEV && new URLSearchParams(location.search).has('diag')
+/** 诊断读数开着没有（main.ts 据此决定要不要每秒算一遍） */
+export const diagShown = () => diagOn
+export function setDiag(text: string) { if (el.diag && diagOn) el.diag.textContent = text }
 
 let everLive = false
 export function setStatus(kind: Status, detail = '') {
@@ -186,6 +205,7 @@ function injectStyles() {
     .saved { font-size: 13px; color: #3CFA44; }
     .bottom-bar { position: fixed; left: 0; right: 0; bottom: 0; display: flex; gap: 10px;
       padding: 12px 20px calc(12px + env(safe-area-inset-bottom)); background: rgba(35,35,35,.96); border-top: 1px solid #3A3A3A; }
-    footer { font-size: 12px; color: #7B7B7B; text-align: center; }`
+    footer { font-size: 12px; color: #7B7B7B; text-align: center; }
+    .diag { margin-top: 6px; font: 11px/1.5 ui-monospace, Menlo, Consolas, monospace; color: #A7A7A7; white-space: pre-wrap; }`
   document.head.appendChild(style)
 }

@@ -33,6 +33,7 @@ On the phone (the plugin page inside the Even App):
 | Soniox API Key | Stored only on the phone |
 | Translate to | Target language, or off |
 | Show original while translating | On: 3 lines original + 6 lines translation. Off: all 9 lines translation |
+| Speech already in the target language | Show it as usual (default), or hide it if you understand that language anyway |
 | Microphone | Glasses, or the phone (for example on a table in a larger room) |
 | Languages spoken around you | Hints for recognition, not a restriction |
 | Quiet timeout | Minutes of silence before disconnecting from Soniox; 0 keeps the connection open |
@@ -58,6 +59,8 @@ Useful while developing (dev server only; all of this is stripped from productio
 | `?lang=en` / `ja` / `zh` | Force the interface language |
 | `?tr=1` / `?tr=0` | Translation on or off |
 | `?src=1` / `?src=0` | Show or hide the original while translating |
+
+If captions start to lag, tap the version number at the bottom of the phone page: a line of live readings appears (audio from the glasses, Soniox, network, display updates) that shows which stage is falling behind.
 
 Put `VITE_SONIOX_KEY=...` in `apps/hear/.env.local` to avoid typing the key into the simulator. `.env.local` is git-ignored.
 

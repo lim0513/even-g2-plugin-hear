@@ -22,7 +22,7 @@ import { Captions } from './captions.ts'
 import { rms, toPcm } from './core/wav.ts'
 import { loadSettings, saveSettings, type Settings } from './settings.ts'
 import { parseHints } from './languages.ts'
-import { mountUi, setStatus, setNote } from './ui.ts'
+import { mountUi, setStatus, setNote, setDiag, diagShown } from './ui.ts'
 import { SonioxSession } from './soniox.ts'
 import { SCRIPT, runFake } from './demo-feed.ts'
 import { t, setLang, getLang, resolveLang } from './i18n.ts'
@@ -52,6 +52,7 @@ if (import.meta.env.DEV) {
   console.log(`[i18n] navigator=${navigator.language} search=${location.search} → ${getLang()}`)
 }
 captions.target = settings.translate ? settings.target : ''
+captions.hideTargetSpeech = !settings.showTargetSpeech
 // 开发期 ?demo=1：假字幕、顶栏按「正在听」显示（出商店截图）。生产里恒为 false，整段摇掉
 const demo = import.meta.env.DEV && new URLSearchParams(location.search).has('demo')
 
@@ -104,25 +105,53 @@ function screen(): Screen {
   }
 }
 
+// ── 诊断读数（手机页点版本号才显示）──
+// 用来分清「用久了延迟变高」卡在哪一段：眼镜→手机的音频、手机→Soniox 的网络、Soniox 识别、手机→眼镜的显示。
+// 每一项都是「这一秒窗口里」的值，每秒出一行然后清零。
+const diag = {
+  /** 麦克风打开后第一帧音频到达的时刻；0＝还没到 */
+  micT0: 0,
+  micBytes: 0,
+  /** 单次 textContainerUpgrade 最久等了多少毫秒 */
+  drawMs: 0,
+  draws: 0,
+  /** 每秒定时器最多晚了多少毫秒（页面被系统降速时会变大） */
+  tickLate: 0,
+  tickAt: Date.now(),
+}
+
 // ── 渲染：只发变了的容器；串行化 ──
 const last: Partial<Record<ContentBlock, string>> = {}
 const lastDim: Partial<Record<ContentBlock, number>> = {}
 let rendering = false
 let dirty = false
+/**
+ * 两轮更新之间至少隔这么久。Soniox 说话时一秒回好几次，每次未定稿的字都变，原先是来一次画一次、
+ * 画完立刻画下一次 —— 等于有人说话时一直把到眼镜的蓝牙链路占满，而眼镜麦的音频走的是同一条链路。
+ * 留出空档给音频；一秒四次对读字幕来说看不出差别。空闲后的第一次更新不等（lastPass 早就过了）。
+ */
+const MIN_GAP = 250
+let lastPass = 0
 async function render() {
   if (rendering) { dirty = true; return }
   rendering = true
   try {
     do {
+      const wait = lastPass + MIN_GAP - Date.now()
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait))
       dirty = false
+      lastPass = Date.now()
       const s = screen()
       for (const k of BLOCKS) {
         if (last[k] === s[k] && lastDim[k] === s.dim[k]) continue
         last[k] = s[k]
         lastDim[k] = s.dim[k]
+        const t0 = Date.now()
         await bridge.textContainerUpgrade(new TextContainerUpgrade({
           containerID: C[k].id, containerName: C[k].name, content: blank(s[k]), textColor: s.dim[k],
         }))
+        diag.drawMs = Math.max(diag.drawMs, Date.now() - t0)
+        diag.draws++
       }
     } while (dirty)
   } finally {
@@ -150,6 +179,8 @@ async function mount(b: EvenAppBridge) {
 async function openMic(): Promise<boolean> {
   const ok = await bridge.audioControl(true, settings.mic === 'glasses' ? AudioInputSource.Glasses : AudioInputSource.Phone)
   micOpen = !!ok
+  diag.micT0 = 0
+  diag.micBytes = 0
   if (!ok) setNote(t('note.micFail', { m: t(settings.mic === 'glasses' ? 'mic.glasses' : 'mic.phone') }), 'warn')
   return micOpen
 }
@@ -222,6 +253,7 @@ function applySettings(next: Settings) {
     || next.translate !== settings.translate || next.hints !== settings.hints
   settings = next
   captions.target = translating() ? settings.target : ''
+  captions.hideTargetSpeech = !settings.showTargetSpeech
   if (mode === 'live') {
     if (micChanged) void closeMic().then(openMic)
     if (sessionChanged) void closeSession().then(() => { if (mode === 'live') openSession() })
@@ -242,6 +274,8 @@ bridge.onEvenHubEvent((event) => {
   if (audio) {
     const pcm = toPcm(audio.audioPcm)
     if (!pcm) return
+    if (!diag.micT0) diag.micT0 = Date.now()
+    diag.micBytes += pcm.byteLength
     if (rms(pcm) > 500) {
       lastVoiceAt = Date.now()
       // 安静期断开后又有声音：立刻重连
@@ -290,6 +324,28 @@ setInterval(() => {
     void render()
   }
 }, 2000)
+
+// 诊断读数：每秒一行。mic＝从开麦算起，墙上时间比收到的音频时长多出多少（眼镜→手机这段欠了多少；
+// 前提是宿主连续送音频，静音时也送 —— 真机上是否如此没验过，静音时这个数若自己涨就说明不是）。
+// stt＝Soniox 比已发出的音频落后多少；net＝压在 WebSocket 里没发出去的；draw＝一次眼镜更新最久等多久 × 次数；
+// tick＝定时器晚了多少；最后是页面可见性（手机锁屏／切后台时是 hidden）
+setInterval(() => {
+  const now = Date.now()
+  diag.tickLate = Math.max(diag.tickLate, now - diag.tickAt - 1000)
+  diag.tickAt = now
+  if (diagShown()) {
+    const sec = (ms: number) => (ms >= 0 ? '+' : '') + (ms / 1000).toFixed(1) + 's'
+    const mic = micOpen && diag.micT0 ? sec(now - diag.micT0 - diag.micBytes / 32) : '-'
+    const stt = session?.lagMs == null ? '-' : sec(session.lagMs)
+    const line = `mic ${mic} · stt ${stt} · net ${((session?.buffered ?? 0) / 1024).toFixed(0)}k`
+      + ` · draw ${diag.drawMs}ms x${diag.draws} · tick +${Math.max(0, diag.tickLate)}ms · ${document.visibilityState}`
+    setDiag(line)
+    console.log('[diag]', line)
+  }
+  diag.drawMs = 0
+  diag.draws = 0
+  diag.tickLate = 0
+}, 1000)
 
 // 演示字幕（只在开发期、没 Key 时）
 if (import.meta.env.DEV && !settings.apiKey) {

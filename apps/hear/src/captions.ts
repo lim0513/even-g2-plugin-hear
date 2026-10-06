@@ -51,6 +51,8 @@ export class Captions {
   nfDst = ''
   /** 译文目标语言；用户自己说目标语言时（translation_status=none 且 language 相同）只进译文流 */
   target = ''
+  /** 说目标语言的话（上面那种）整个不要：既不进原文流也不进译文流。只在 target 非空时起作用 */
+  hideTargetSpeech = false
   /** 最近一次有内容到达的时间（给"多久没字了"用） */
   lastAt = 0
   /** 各流最后一个定稿 token 的说话人，变了就换行 */
@@ -67,6 +69,8 @@ export class Captions {
       if (CONTROL.test(t.text)) continue   // <end> <fin> 等控制 token 不是内容
       const toDst = t.translation_status === 'translation'
         || (t.translation_status === 'none' && !!this.target && t.language === this.target)
+      // 放在说话人判断之前：被藏掉的话不参与按人换行
+      if (this.hideTargetSpeech && toDst && t.translation_status === 'none') continue
       const sp = t.speaker ?? ''
       if (t.is_final) {
         // 按人换行（和 meeting-notes 一样）：说话人变了就另起一行。译文 token 也带 speaker

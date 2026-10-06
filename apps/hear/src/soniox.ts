@@ -62,6 +62,15 @@ export class SonioxSession {
   private backlog: Uint8Array[] = []
   private backlogBytes = 0
   private lastSentAt = 0
+  /** 这条连接上已经交给 WebSocket 的音频字节数（含补发的积压） */
+  private sentBytes = 0
+  /**
+   * 识别落后多少毫秒：已经发出去的音频时长 − 服务端说它处理到的位置（total_audio_proc_ms）。
+   * 只在有 token 的响应上更新 —— 没人说话时服务端报的进度靠不靠得住没验过。连上之前是 null
+   */
+  lagMs: number | null = null
+  /** 还压在 WebSocket 里没发到网上的字节数。一直涨＝上行网络跟不上 */
+  get buffered(): number { return this.ws?.bufferedAmount ?? 0 }
   private keepalive: ReturnType<typeof setInterval> | null = null
   private segmentTimer: ReturnType<typeof setTimeout> | null = null
   private retryDelay = 1000
@@ -106,7 +115,9 @@ export class SonioxSession {
       this.retryDelay = 1000
       this.setStatus('live')
       // 断线期间攒下的先补发
-      for (const b of this.backlog) ws.send(b)
+      this.sentBytes = 0
+      this.lagMs = null
+      for (const b of this.backlog) { ws.send(b); this.sentBytes += b.byteLength }
       this.backlog = []
       this.backlogBytes = 0
       this.lastSentAt = Date.now()
@@ -130,6 +141,8 @@ export class SonioxSession {
         else { this.wantOpen = false; this.setStatus('error', c.text) }
         return
       }
+      // 16 kHz 16 bit 单声道 = 每毫秒 32 字节
+      if (r.tokens?.length && typeof r.total_audio_proc_ms === 'number') this.lagMs = this.sentBytes / 32 - r.total_audio_proc_ms
       if (r.tokens?.length) this.ev.onResponse(r, seg)
       if (r.finished) console.log('[soniox] finished, segment', seg)
     }
@@ -196,6 +209,7 @@ export class SonioxSession {
     const ws = this.ws
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(pcm)
+      this.sentBytes += pcm.byteLength
       this.lastSentAt = Date.now()
       return
     }

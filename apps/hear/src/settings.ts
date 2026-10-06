@@ -13,6 +13,11 @@ export type Settings = {
   translate: boolean
   /** 开着翻译时，眼镜上还显不显示原话。关掉＝9 行全给译文。不翻译时不起作用 */
   showSource: boolean
+  /**
+   * 开着翻译时，别人直接说目标语言的话还显不显示。关掉＝不显示（把日语翻成中文的人，中文本来就听得懂）。
+   * 默认显示：这是听障辅助，听不见的人两种话都要看
+   */
+  showTargetSpeech: boolean
   /** language_hints，逗号分隔 */
   hints: string
   mic: 'phone' | 'glasses'
@@ -26,6 +31,7 @@ export const DEFAULTS: Settings = {
   target: 'zh',
   translate: false,
   showSource: true,
+  showTargetSpeech: true,
   hints: 'ja, zh',
   mic: 'glasses',
   quietMin: 2,
