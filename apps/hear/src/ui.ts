@@ -1,6 +1,6 @@
 // 手机侧界面：一个画面，分两截。
 //   上面固定不动：标题 + 状态、开始／暂停 和 清屏 两个按钮、一行提示、设置（可折叠；正在听的时候自动收起、展不开）
-//   下面单独滚动：实时字幕框 → AI 回答框 → 页脚
+//   下面单独滚动：实时字幕框（一段发言一块，原话在上、译文在下）→ AI 回答框 → 页脚
 // 设置展开后比屏幕还长，所以它在固定区里自己滚（.top 限高，details 在里面滚，标题那一行吸顶）。
 // 字幕框是后加的（原先手机上不显示字幕）：只是眼镜上那几行的镜像，不存、不导出。
 //
@@ -9,6 +9,7 @@
 // 外壳的高度跟着「键盘上方还剩多少」（visualViewport）走，里面那一截自己滚。
 // 文案全部走 i18n.ts 的 t()；换语言时 main.ts 重新调一次 mountUi()。
 import type { Settings } from './settings.ts'
+import type { Item } from './captions.ts'
 import { LANGUAGES, LANG_CODES, parseHints } from './languages.ts'
 import { t, LANGS, LANG_NAMES } from './i18n.ts'
 import { AI_MODELS, DEFAULT_AI_MODEL, isAiModel } from './ai.ts'
@@ -24,6 +25,9 @@ export type UiHandlers = {
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!))
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T
 const el: Record<string, HTMLElement> = {}
+
+// 开发期 ?fold=1：没填 Key 也把设置收起来（演示模式下设置默认展开，会把字幕框挤得只剩一条缝，没法看）
+const foldForDev = import.meta.env.DEV && new URLSearchParams(location.search).has('fold')
 
 export function mountUi(settings: Settings, h: UiHandlers) {
   const app = document.getElementById('app')!
@@ -43,7 +47,7 @@ export function mountUi(settings: Settings, h: UiHandlers) {
         <button id="clear" type="button" class="ghost big">${t('clear')}</button>
       </div>
       <p id="note" class="hint"></p>
-      <details id="settings" class="settings"${settings.apiKey ? '' : ' open'}>
+      <details id="settings" class="settings"${settings.apiKey || foldForDev ? '' : ' open'}>
         <summary><span>${t('settings')}</span><span id="lock-tip" class="dim"></span></summary>
         <div class="field">
           <label for="apiKey">Soniox API Key</label>
@@ -133,8 +137,7 @@ export function mountUi(settings: Settings, h: UiHandlers) {
     <main id="scroll" class="scroll">
       <section class="caps">
         <div class="caps-label">${t('caps')}</div>
-        <div id="cap-src" class="cap cap-src" hidden></div>
-        <div id="cap-dst" class="cap cap-dst" hidden></div>
+        <div id="cap-list" class="cap-list" hidden></div>
         <div id="cap-empty" class="dim">${t('caps.empty')}</div>
       </section>
       <section id="ai-box" class="caps ai" hidden>
@@ -146,11 +149,11 @@ export function mountUi(settings: Settings, h: UiHandlers) {
     </main>
     </div>`
 
-  for (const id of ['status', 'note', 'pause', 'diag', 'settings', 'lock-tip', 'cap-src', 'cap-dst', 'cap-empty', 'ai-box', 'ai-info', 'ai-text']) el[id] = $(id)
+  for (const id of ['status', 'note', 'pause', 'diag', 'settings', 'lock-tip', 'cap-list', 'cap-empty', 'ai-box', 'ai-info', 'ai-text']) el[id] = $(id)
   // 正在听的时候设置展不开：点标题那一下拦掉（见 setStatus 里的 lockSettings）
   el.settings.querySelector('summary')!.addEventListener('click', (e) => { if (locked) e.preventDefault() })
   lockSettings(locked)
-  capSig = ''
+  shownSig = []
   // 点版本号：开关诊断读数（排查「用久了延迟变高」用，平时不显示）。读数出在版本号下面。
   // 一度挪到页面顶上、改成点状态标签（以为真机上页底够不着），用户确认 0.1.3 这样看得到，要求保留
   $('ver').onclick = () => { diagOn = !diagOn; el.diag.hidden = !diagOn; el.diag.textContent = '' }
@@ -234,26 +237,31 @@ function lockSettings(on: boolean) {
 }
 
 // ── 实时字幕框 ──
-// 手机上的记录这次打开期间不清，会越来越长（上万字）。每秒更新好几次，不能整段重写 ——
-// 整段重画在 iPhone 上会闪（根 CLAUDE.md，meeting-notes 踩过）。所以一行一个节点，只动变了的那几行：
-// 前面没变的行原样留着，从第一处不同的行开始换掉。平时变的只有最后一两行。
+// 手机上的记录这次打开期间不清，会越来越长（上万字）。每秒更新好几次，不能整个重写 ——
+// 整块重画在 iPhone 上会闪（根 CLAUDE.md，meeting-notes 踩过）。所以一段发言一个节点，只换内容变了的那几段：
+// 平时变的只有最后一段（正在说的），偶尔是前面某一段（译文晚到）。
 const NL = String.fromCharCode(10)
-const shown = new WeakMap<HTMLElement, string[]>()
-function putLines(box: HTMLElement, text: string) {
-  const next = text ? text.split(NL) : []
-  const prev = shown.get(box) ?? []
-  let i = 0
-  while (i < next.length && i < prev.length && next[i] === prev[i]) i++
-  while (box.children.length > i) box.lastElementChild!.remove()
-  for (let k = i; k < next.length; k++) {
-    const row = document.createElement('div')
-    row.textContent = next[k]
-    // AI 的回答（captions.note 插进来的）：首行以【AI】开头，续行以全角空格开头
-    if (next[k].startsWith('【AI】') || next[k].startsWith('　')) row.className = 'ai-line'
-    box.appendChild(row)
-  }
-  shown.set(box, next)
+let shownSig: string[] = []
+function sayNode(src: string, dst: string, translating: boolean): HTMLElement {
+  const box = document.createElement('div')
+  box.className = 'utt'
+  const line = (cls: string, text: string) => { const d = document.createElement('div'); d.className = cls; d.textContent = text; box.appendChild(d) }
+  // 字体样式和原来两栏时一样：原话小而暗，译文大而亮。没开翻译时只有原话，它就是主角，用亮的那种。
+  // 只有译文没有原话的（别人直接说目标语言）同样是亮的
+  if (src) line(translating || dst ? 'u-src' : 'u-dst', src)
+  if (dst) line('u-dst', dst)
+  return box
 }
+function aiNode(text: string): HTMLElement {
+  const box = document.createElement('div')
+  box.className = 'utt ai'
+  const d = document.createElement('div')
+  d.className = 'u-dst'
+  d.textContent = '【AI】' + text
+  box.appendChild(d)
+  return box
+}
+
 /** 手机上的 AI 回答框。text 为 null＝收起。info：状态或耗时，接在标题后面 */
 export function setAi(text: string | null, info = '') {
   if (!el['ai-box']) return
@@ -263,28 +271,32 @@ export function setAi(text: string | null, info = '') {
   el['ai-info'].textContent = info
 }
 
-let capSig = ''
 /**
- * 把眼镜上的字幕镜像到手机上。translating：开着翻译 —— 这时上面是原话（暗）、下面是译文（亮）；
- * 不翻译时只有原话一块。和眼镜不同的是这里总是两块都给（「眼镜上显示原话」那个开关只管眼镜）
+ * 手机上的记录：一段发言一块，原话在上、译文在下（和 meeting-notes 的记录同一种排法），中间夹着 AI 的回答。
+ * translating：现在开着翻译没有 —— 只影响「只有原话的段」用哪种字体
  */
-export function setCaptions(src: string, dst: string, translating: boolean) {
-  if (!el['cap-dst']) return
-  const a = translating ? src : ''
-  const b = translating ? dst : src
-  const sig = a + String.fromCharCode(0) + b
-  if (sig === capSig) return
-  capSig = sig
-  const put = (box: HTMLElement, text: string) => {
-    // 本来就停在最底下才跟着往下滚；用户往上翻着看的时候不抢
-    const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 24
-    box.hidden = !text
-    putLines(box, text)
-    if (stick) box.scrollTop = box.scrollHeight
+export function setCaptions(items: Item[], translating: boolean) {
+  const list = el['cap-list']
+  if (!list) return
+  const sig = items.map((it) => (it.kind === 'ai' ? 'a' + NL + it.text : (translating ? 't' : 's') + NL + it.src + NL + it.dst))
+  // 本来就停在最底下才跟着往下滚；用户往上翻着看的时候不抢
+  const stick = list.scrollHeight - list.scrollTop - list.clientHeight < 24
+  let changed = sig.length !== shownSig.length
+  for (let i = 0; i < items.length; i++) {
+    if (sig[i] === shownSig[i]) continue
+    changed = true
+    const it = items[i]
+    const node = it.kind === 'ai' ? aiNode(it.text) : sayNode(it.src, it.dst, translating)
+    const old = list.children[i]
+    if (old) list.replaceChild(node, old)
+    else list.appendChild(node)
   }
-  put(el['cap-src'], a)
-  put(el['cap-dst'], b)
-  el['cap-empty'].hidden = !!(a || b)
+  while (list.children.length > items.length) list.lastElementChild!.remove()
+  if (!changed) return
+  shownSig = sig
+  list.hidden = !items.length
+  el['cap-empty'].hidden = !!items.length
+  if (stick) list.scrollTop = list.scrollHeight
 }
 
 // 开发期 ?diag=1 直接打开（模拟器里点不到手机页）。生产里恒为 false
@@ -340,12 +352,17 @@ function injectStyles() {
     .caps { background: #2A2A2A; border: 1px solid #3A3A3A; border-radius: 14px; padding: 12px 16px; }
     .caps-label { font-size: 12px; color: #A7A7A7; margin-bottom: 8px; }
     .caps.ai { border-color: rgba(254,249,145,.45); }
-    .ai-line { color: #FEF991; }
     .group-title { font-size: 12px; color: #A7A7A7; margin: 18px 0 10px; padding-top: 14px; border-top: 1px solid #3A3A3A; }
     .cap { white-space: pre-wrap; word-break: break-word; overflow-y: auto; -webkit-overflow-scrolling: touch;
       overscroll-behavior: contain; line-height: 1.5; }
-    .cap-src { max-height: 22vh; font-size: 14px; color: #8A8A8A; margin-bottom: 10px; }
     .cap-dst { max-height: 34vh; font-size: 17px; color: #E5E5E5; }
+    /* 记录：一个滚动区，一段发言一块 */
+    .cap-list { max-height: 58vh; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+    .utt { margin-bottom: 14px; white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
+    .utt:last-child { margin-bottom: 0; }
+    .u-src { font-size: 14px; color: #8A8A8A; }
+    .u-dst { font-size: 17px; color: #E5E5E5; }
+    .utt.ai .u-dst { color: #FEF991; }
     summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; cursor: pointer;
       font-size: 15px; font-weight: 600; list-style: none; }
     summary::-webkit-details-marker { display: none; }

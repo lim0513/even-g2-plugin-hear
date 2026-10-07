@@ -1,11 +1,14 @@
-// Soniox 实时 token 流 → 两条字幕流（原文 / 译文）。纯逻辑，不依赖 SDK。
+// Soniox 实时 token 流 → 眼镜上的字幕 + 手机上的记录。纯逻辑，不依赖 SDK。
 //
-// 和 meeting-notes 的 core/tokens.ts 不同：这里**不标「人物N」、不分段**，只在换人时换行。听障场景要的是
-// "现在有人在说什么"，不是会议纪要 —— 所以就是两条连续滚动的文本：
-//   src  说的原话（任何语言，Soniox 自动识别）；说话人变了就换行
-//   dst  译文（开了翻译才有）；同样按说话人换行（译文 token 也带 speaker）
-// 未定稿部分（nfSrc / nfDst）每次响应整组替换，显示时接在定稿文本后面。
-// 文本只留最后 MAX 字符，一天戴着也不会涨。
+// 两份东西，形状不一样：
+//
+//   眼镜：两条连续滚动的文本（原文 / 译文），只在换人时换行。屏幕只有九行，要的是「现在在说什么」。
+//         自动清屏、「不显示目标语言」只影响这一份。
+//   手机：一段一段的记录，**一个人的一段发言里，原话在上、译文在下**（和 meeting-notes 的记录同一种排法）。
+//         原先手机上也是原文一栏、译文一栏，两栏各滚各的，对不上哪句译的是哪句（用户实测）。
+//         这一份在本次打开期间不清。
+//
+// 未定稿的 token 每次响应整组重发，显示时接在定稿文本后面。
 
 export type SonioxToken = {
   text: string
@@ -37,7 +40,7 @@ const MAX = 4000
  */
 const PHONE_MAX = 30000
 /**
- * 每个人开口的那一行，行首的记号。换人只换行的话，上一个人的话正好写满一行时
+ * 眼镜上每个人开口的那一行，行首的记号。换人只换行的话，上一个人的话正好写满一行时
  * 根本看不出换了人；折行出来的续行不带记号，所以"带记号＝换了人说话"。
  * 「•」是真机字库验过的（根 CLAUDE.md 的字形表），别换成没验过的符号 —— 缺字形是静默空白。
  */
@@ -92,14 +95,42 @@ class Stream {
     this.text = this.text.slice(over)
     return over
   }
-
-  reset(): void { this.text = ''; this.speaker = ''; this.begin() }
 }
 
 type Side = 'src' | 'dst'
 
+/**
+ * 手机记录里的一段。
+ *   say：一个人连着说的一段话 —— src 原话，dst 它的译文（没开翻译时 dst 为空；别人直接说目标语言时只有 dst）
+ *   ai： 插进来的 AI 回答
+ */
+export type Item =
+  | { kind: 'say'; src: string; dst: string }
+  | { kind: 'ai'; text: string }
+
+/** 手机记录内部用的一段发言 */
+type Seg = {
+  speaker: string
+  src: string
+  dst: string
+  nfSrc: string
+  nfDst: string
+  /** 后面插了 AI 回答：这个人接着说的话另起一段，排在回答后面 */
+  closed: boolean
+  /** 这段话最后一次有定稿的原话进来的时刻 */
+  lastAt: number
+}
+
+/**
+ * 同一个人停了这么久再开口，算新的一段发言。不分的话，一个人隔几分钟说一句，全都堆在同一块里，
+ * 原话一大段、译文一大段，又对不上了。译文是按说话人往回找最后一段的：它跟在原话定稿之后一两秒内就到，
+ * 早于新段开出来的时候，所以一般不会被分到新段里去。
+ * 原先是 10 秒，用户嫌太长；再短（两三秒以内）就会和译文到达的时间撞上，上一段的译文会落到新段里
+ */
+const SEG_GAP_MS = 4_000
+
 export class Captions {
-  /** 译文目标语言；别人直接说目标语言时（translation_status=none 且 language 相同）归到译文那栏 */
+  /** 译文目标语言；别人直接说目标语言时（translation_status=none 且 language 相同）归到译文那边 */
   target = ''
   /**
    * 别人直接说目标语言的话，**眼镜上**不显示（本来就听得懂）。手机上照常保留 —— 手机那份是完整记录。
@@ -109,53 +140,124 @@ export class Captions {
   /** 最近一次有定稿内容到达的时间 */
   lastAt = 0
 
-  // ── 两份：手机上的（完整）和眼镜上的 ──
-  // 眼镜那份比手机那份少两样：被「不显示目标语言」藏掉的话，和自动清屏之前的内容。
-  // 各自按说话人换行，所以是各存一份，不是从一份里过滤出来的 —— 藏掉一句之后前后两句是不是同一个人，两边答案不一样。
-  private phone: Record<Side, Stream> = { src: new Stream(), dst: new Stream() }
+  // ── 眼镜：两条流 ──
   private glass: Record<Side, Stream> = { src: new Stream(), dst: new Stream() }
-  /** 眼镜从哪儿开始显示（自动清屏只是把它挪到末尾，不删数据） */
+  /** 眼镜从哪儿开始显示（清屏只是把它挪到末尾，不删数据） */
   private cut: Record<Side, number> = { src: 0, dst: 0 }
   /** 清屏那一刻眼镜上还挂着的未定稿文字。服务端下次原样再发来时，不该把刚清的屏又填回去 */
   private staleNf = ''
-  /** 插进手机字幕里的备注（AI 的回答）：只在手机那份里出现 */
-  private notes: { side: Side; pos: number; text: string }[] = []
 
-  feed(res: SonioxResponse): void {
-    for (const k of ['src', 'dst'] as Side[]) { this.phone[k].begin(); this.glass[k].begin() }
+  // ── 手机：一段一段的发言 ──
+  private segs: (Seg | { ai: string })[] = []
+  /**
+   * 未定稿里、说话人和现有段对不上的那部分。实时模式下未定稿 token 的说话人会短暂跳变（官方文档明说），
+   * 让它们也开新段的话，一个闪过又消失的 token 会把同一个人的一句话切成两段（meeting-notes 实测过）。
+   * 所以**只有定稿 token 才开新段**，跳变的未定稿只作为临时的尾巴显示
+   */
+  private pending: { speaker: string; src: string; dst: string }[] = []
+  /** 这次响应里未定稿的原话（所有人的），给 recent() 用 */
+  private nfParts: { sp: string; text: string }[] = []
+
+  /**
+   * segment：Soniox 的第几条连接。**每条新连接的说话人编号都从 1 重新开始**，所以说话人的键要带上它，
+   * 否则重连之后的「1」会被当成重连之前的「1」（很可能是另一个人）
+   */
+  feed(res: SonioxResponse, segment = 0): void {
+    for (const k of ['src', 'dst'] as Side[]) this.glass[k].begin()
+    this.nfParts = []
+    for (const s of this.segs) if (!('ai' in s)) { s.nfSrc = ''; s.nfDst = '' }
+    this.pending = []
     for (const t of res.tokens) {
       if (CONTROL.test(t.text)) continue   // <end> <fin> 等控制 token 不是内容
+      const sp = `${segment}.${t.speaker ?? ''}`
+      const isTr = t.translation_status === 'translation'
       const inTarget = t.translation_status === 'none' && !!this.target && t.language === this.target
-      const side: Side = t.translation_status === 'translation' || inTarget ? 'dst' : 'src'
-      const sp = t.speaker ?? ''
+      const side: Side = isTr || inTarget ? 'dst' : 'src'
       const onGlasses = !(this.hideTargetSpeech && inTarget)
       if (t.is_final) {
         // 给 AI 用的那份记录：所有人说的原话（译文不要），不管眼镜上藏没藏、清没清
-        if (t.translation_status !== 'translation') this.logFinal(sp, t.text)
-        this.phone[side].final(sp, t.text)
+        if (!isTr) this.logFinal(sp, t.text)
         if (onGlasses) this.glass[side].final(sp, t.text)
+        this.segFor(sp, isTr, true)![side] += t.text
         this.lastAt = Date.now()
       } else {
-        this.phone[side].nonFinal(sp, t.text)
+        if (!isTr) this.nfParts.push({ sp, text: t.text })
         if (onGlasses) this.glass[side].nonFinal(sp, t.text)
+        const seg = this.segFor(sp, isTr, false)
+        if (seg) seg[side === 'src' ? 'nfSrc' : 'nfDst'] += t.text
+        else {
+          let p = this.pending.find((x) => x.speaker === sp)
+          if (!p) { p = { speaker: sp, src: '', dst: '' }; this.pending.push(p) }
+          p[side] += t.text
+        }
       }
     }
-    for (const k of ['src', 'dst'] as Side[]) {
-      const over = this.phone[k].trim(PHONE_MAX)
-      if (over) this.notes = this.notes.map((n) => (n.side === k ? { ...n, pos: n.pos - over } : n)).filter((n) => n.pos >= 0)
-      this.cut[k] = Math.max(0, this.cut[k] - this.glass[k].trim(MAX))
-    }
+    for (const k of ['src', 'dst'] as Side[]) this.cut[k] = Math.max(0, this.cut[k] - this.glass[k].trim(MAX))
+    this.trimSegs()
     // 清屏时挂着的那半句有了变化（定稿了，或者接着往下说了）：不再藏
     if (this.staleNf && this.nfSig() !== this.staleNf) this.staleNf = ''
   }
 
+  /**
+   * 手机记录：这个 token 落到哪一段发言（和 meeting-notes 的 Transcript.current 同一套规则）。
+   *   说的话：接在最后一段后面，前提是同一个人、并且那段后面没插过 AI 回答；否则另起一段
+   *   译文：  可能在换人之后才到，所以按说话人往回找他的最后一段
+   * allowNew：只有定稿 token 才允许开新段
+   */
+  private segFor(sp: string, isTr: boolean, allowNew: boolean): Seg | null {
+    if (isTr) {
+      for (let i = this.segs.length - 1; i >= 0; i--) {
+        const s = this.segs[i]
+        if (!('ai' in s) && s.speaker === sp) return s
+      }
+    }
+    const now = Date.now()
+    const last = this.segs[this.segs.length - 1]
+    if (last && !('ai' in last) && last.speaker === sp && !last.closed) {
+      // 同一个人隔了很久才又开口：另起一段。未定稿的字不算数（allowNew 为假时接在旧段后面当临时尾巴，
+      // 等它定稿时再按这里的规则落位），免得一个闪过的未定稿 token 把段切开
+      if (!allowNew || now - last.lastAt <= SEG_GAP_MS) { if (allowNew) last.lastAt = now; return last }
+    }
+    if (!allowNew) return null
+    const seg: Seg = { speaker: sp, src: '', dst: '', nfSrc: '', nfDst: '', closed: false, lastAt: now }
+    this.segs.push(seg)
+    return seg
+  }
+
+  private trimSegs(): void {
+    const size = (s: Seg | { ai: string }) => ('ai' in s ? s.ai.length : s.src.length + s.dst.length)
+    let total = 0
+    for (const s of this.segs) total += size(s)
+    while (total > PHONE_MAX && this.segs.length > 1) total -= size(this.segs.shift()!)
+  }
+
+  /** 手机上的记录：一段一段的发言，原话和译文在一起，中间夹着 AI 的回答。本次打开期间不清 */
+  items(): Item[] {
+    const out: Item[] = []
+    for (const s of this.segs) {
+      if ('ai' in s) { out.push({ kind: 'ai', text: s.ai }); continue }
+      const src = (s.src + s.nfSrc).trim()
+      const dst = (s.dst + s.nfDst).trim()
+      if (src || dst) out.push({ kind: 'say', src, dst })
+    }
+    for (const p of this.pending) {
+      const src = p.src.trim()
+      const dst = p.dst.trim()
+      if (src || dst) out.push({ kind: 'say', src, dst })
+    }
+    return out
+  }
+
+  /** 在手机记录的当前位置插一段 AI 的回答。前面那段发言就此收尾，同一个人接着说的话排在回答后面 */
+  note(text: string): void {
+    for (const s of this.segs) if (!('ai' in s)) s.closed = true
+    this.segs.push({ ai: text })
+  }
+
+  // ── 眼镜 ──
+
   private nfSig(): string { return this.glass.src.nf.trim() + '|' + this.glass.dst.nf.trim() }
 
-  // 流里的每个 '\n' 都是换人，所以每行行首加记号
-  /** 手机上的原文：完整的，带插入的备注 */
-  srcText(): string { return this.phoneText('src') }
-  /** 手机上的译文：完整的，带插入的备注 */
-  dstText(): string { return this.phoneText('dst') }
   /** 眼镜上的原文：上次清屏之后的，不含被藏掉的话 */
   screenSrc(): string { return this.glassText('src') }
   /** 眼镜上的译文：上次清屏之后的，不含被藏掉的话 */
@@ -164,28 +266,6 @@ export class Captions {
   private glassText(k: Side): string {
     const s = this.glass[k]
     return turns((s.text.slice(this.cut[k]) + (this.staleNf ? '' : s.nf)).replace(/^\n/, ''))
-  }
-
-  private phoneText(k: Side): string {
-    const s = this.phone[k]
-    const ns = this.notes.filter((n) => n.side === k)
-    if (!ns.length) return turns(s.text + s.nf)
-    const out: string[] = []
-    let at = 0
-    for (const n of ns) {
-      const seg = turns(s.text.slice(at, n.pos).replace(/^\n/, ''))
-      if (seg) out.push(seg)
-      out.push(n.text)
-      at = n.pos
-    }
-    const rest = turns((s.text.slice(at) + s.nf).replace(/^\n/, ''))
-    if (rest) out.push(rest)
-    return out.join('\n')
-  }
-
-  /** 在手机字幕的当前位置插一段备注（AI 的回答）。side：插在原文那栏还是译文那栏 */
-  note(side: Side, text: string): void {
-    this.notes.push({ side, pos: this.phone[side].text.length, text })
   }
 
   /**
@@ -197,38 +277,55 @@ export class Captions {
     this.staleNf = this.glass.src.nf || this.glass.dst.nf ? this.nfSig() : ''
   }
 
-
   // ── 最近一段对话（发给 AI 的上下文）──
-  // 和屏幕上那两份分开存：屏幕会被清掉，而「刚才那人问了什么」往往正是清屏之后才想问的。
-  // 范围怎么定：**一段对话＝中间没有超过 LOG_GAP_MS 的停顿**。停了这么久再有人开口，算新的一段，旧的丢掉；
-  // 一段之内最多留 LOG_MAX 个字（只留末尾）。取的时候再按 max 截一次。
-  private log = ''
-  private logSpeaker = ''
+  // 和上面两份分开存。范围怎么定：**一段对话＝中间没有超过 LOG_GAP_MS 的停顿**。停了这么久再有人开口，
+  // 算新的一段，旧的丢掉；一段之内最多留 LOG_MAX 个字（只留末尾）。取的时候再按 max 截一次。
+  //
+  // 每一行带说话人（S1、S2…，按第一次开口的先后编号）。画面上不显示是谁，只用它换行；
+  // 但「这两句是同一个人说的」「这句是另一个人答的」对理解对话很要紧，所以给 AI 的这份带上。
+  private log: { sp: string; text: string }[] = []
+  private logLen = 0
   private logAt = 0
+  private speakerNo = new Map<string, number>()
 
-  private logFinal(speaker: string, text: string): void {
-    const now = Date.now()
-    if (now - this.logAt > LOG_GAP_MS) { this.log = ''; this.logSpeaker = '' }
-    this.logAt = now
-    if (speaker !== this.logSpeaker && this.log && !this.log.endsWith('\n')) this.log += '\n'
-    this.logSpeaker = speaker
-    this.log += text
-    if (this.log.length > LOG_MAX) this.log = this.log.slice(-LOG_MAX)
+  private label(sp: string): string {
+    let n = this.speakerNo.get(sp)
+    if (n === undefined) { n = this.speakerNo.size + 1; this.speakerNo.set(sp, n) }
+    return `S${n}`
   }
 
-  /** 最近一段对话的原话，加上还没定稿的那半句；每个人开口的一行行首带「• 」。超过 max 个字只留末尾（从整行开始） */
+  private logFinal(sp: string, text: string): void {
+    const now = Date.now()
+    if (now - this.logAt > LOG_GAP_MS) { this.log = []; this.logLen = 0 }
+    this.logAt = now
+    const last = this.log[this.log.length - 1]
+    if (last && last.sp === sp) last.text += text
+    else this.log.push({ sp, text })
+    this.logLen += text.length
+    // 超了从最前面丢：先丢整行，只剩一行还超就截这一行的开头
+    while (this.logLen > LOG_MAX && this.log.length > 1) this.logLen -= this.log.shift()!.text.length
+    if (this.logLen > LOG_MAX) { this.log[0].text = this.log[0].text.slice(-LOG_MAX); this.logLen = this.log[0].text.length }
+  }
+
+  /**
+   * 最近一段对话的原话，加上还没定稿的那半句。一个人连着说的话一行，行首是「S1: 」这样的说话人记号。
+   * 超过 max 个字只留末尾（从整行开始）
+   */
   recent(max = 800): string {
     const stale = Date.now() - this.logAt > LOG_GAP_MS
-    const log = stale ? '' : this.log
-    // 未定稿的半句接在后面。它自带的换行是照手机那份原文流算的，这里的最后一句不一定是那一份的最后一句，说话人重新比一次
-    const nf = this.phone.src.nf.replace(/^\n/, '')
-    const gap = log && nf && !log.endsWith('\n') && this.phone.src.nfFirst !== this.logSpeaker ? '\n' : ''
-    let s = turns(log + gap + nf)
-    if (s.length > max) {
-      s = s.slice(-max)
-      const nl = s.indexOf('\n')
-      if (nl >= 0 && nl < s.length - 1) s = s.slice(nl + 1)
+    const parts: { sp: string; text: string }[] = []
+    for (const p of [...(stale ? [] : this.log), ...this.nfParts]) {
+      const last = parts[parts.length - 1]
+      if (last && last.sp === p.sp) last.text += p.text
+      else parts.push({ sp: p.sp, text: p.text })
     }
-    return s
+    const NL = String.fromCharCode(10)
+    let out = parts.filter((p) => p.text.trim()).map((p) => `${this.label(p.sp)}: ${p.text.trim()}`).join(NL)
+    if (out.length > max) {
+      out = out.slice(-max)
+      const nl = out.indexOf(NL)
+      if (nl >= 0 && nl < out.length - 1) out = out.slice(nl + 1)
+    }
+    return out
   }
 }

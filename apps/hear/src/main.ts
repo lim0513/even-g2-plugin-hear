@@ -181,11 +181,10 @@ function toggleAi() {
       mine.info = `${sec(r.firstMs)}/${sec(r.totalMs)}s`
       setNote(t('ai.note.timing', { m: r.model, f: sec(r.firstMs), t: sec(r.totalMs) }))
     }
-    // 写完：回答插进手机的实时字幕里（开着翻译插在译文那栏，否则原文那栏），单独的回答框收起。
+    // 写完：回答插进手机记录的当时位置，单独的回答框收起。
     // 眼镜上那份字幕不带它 —— 眼镜上回答是盖在字幕上显示的，关掉就回到字幕
     if (!r.error && r.text.trim()) {
-      const body = r.text.trim().split(String.fromCharCode(10)).map((l, i) => (i ? '　' : '【AI】') + l).join(String.fromCharCode(10))
-      captions.note(translating() ? 'dst' : 'src', body)
+      captions.note(r.text.trim())
       setAi(null)
     } else setAi(mine.text, mine.info)
     void render()
@@ -288,11 +287,11 @@ const diag = {
 }
 
 // ── 字幕进来：喂给组装器，文本变了就记下时刻 ──
-function feedCaptions(res: Parameters<Captions['feed']>[0]) {
+function feedCaptions(res: Parameters<Captions['feed']>[0], segment = 0) {
   // 自动清屏是眼镜的事，所以「有没有新字」看眼镜上那份：只在手机上保留的话（被藏掉的目标语言）不算
   const before = [captions.screenSrc(), captions.screenDst()]
   countTokens(res)
-  captions.feed(res)
+  captions.feed(res, segment)
   if (captions.screenSrc() !== before[0] || captions.screenDst() !== before[1]) lastTextAt = Date.now()
   void render()
 }
@@ -320,7 +319,7 @@ function phoneSoon() {
   if (phoneTimer) return
   phoneTimer = setTimeout(() => {
     phoneTimer = null
-    setCaptions(captions.srcText(), captions.dstText(), translating())
+    setCaptions(captions.items(), translating())
   }, 300)
 }
 
@@ -391,7 +390,7 @@ function openSession() {
     apiKey: settings.apiKey, target: translating() ? settings.target : '', hints: parseHints(settings.hints), context: {},
     endpoint: settings.endpoint,
   }, {
-    onResponse: (r) => feedCaptions(r),
+    onResponse: (r, seg) => feedCaptions(r, seg),
     onNet: (slow) => {
       netSlow = slow
       if (slow) setNote(t('note.netSlow'), 'warn')
