@@ -1,7 +1,7 @@
 {
   "name": "hear",
   "private": true,
-  "version": "0.1.4",
+  "version": "0.1.10",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,6 +13,7 @@
     "test": "node test/fake-japanese.mjs"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.131.0",
     "@evenrealities/even_hub_sdk": "^0.0.15"
   },
   "devDependencies": {

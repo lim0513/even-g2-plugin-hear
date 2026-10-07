@@ -2,6 +2,7 @@
 import type { EvenAppBridge } from '@evenrealities/even_hub_sdk'
 import { kvGet, kvSet } from './kv.ts'
 import { LANG_CODES } from './languages.ts'
+import { DEFAULT_AI_MODEL, type AiModel } from './ai.ts'
 
 export type Settings = {
   /** 界面语言：'auto'＝跟手机，或 zh / ja / en */
@@ -18,11 +19,24 @@ export type Settings = {
    * 默认显示：这是听障辅助，听不见的人两种话都要看
    */
   showTargetSpeech: boolean
+  /**
+   * 端点检测：开＝一句话一停下 Soniox 就定稿，字幕和译文出得快（默认）；关＝多等一会儿，由我们在停顿后发定稿指令，
+   * 说话人区分更准、不容易把一句话从中间断开，代价是每句话的结尾晚一秒多
+   */
+  endpoint: boolean
   /** language_hints，逗号分隔 */
   hints: string
   mic: 'phone' | 'glasses'
   /** 安静多少分钟后断开 Soniox（省钱）；0＝不断 */
   quietMin: number
+  /**
+   * 自动清屏：眼镜上的字幕这么多秒没有新字就清掉；0＝不自动清。
+   * 「没有新字」指字幕文本没变化 —— 期间只要出了新字（包括还没定稿的）就重新计时
+   */
+  clearSec: number
+  /** Claude 的 API Key（AI 解答，试验）。空＝不启用，眼镜单击不做任何事 */
+  claudeKey: string
+  claudeModel: AiModel
 }
 
 export const DEFAULTS: Settings = {
@@ -32,9 +46,13 @@ export const DEFAULTS: Settings = {
   translate: false,
   showSource: true,
   showTargetSpeech: true,
+  endpoint: true,
   hints: 'ja, zh',
   mic: 'glasses',
   quietMin: 2,
+  clearSec: 15,
+  claudeKey: '',
+  claudeModel: DEFAULT_AI_MODEL,
 }
 
 const KEY = 'hear.settings.v1'

@@ -20,6 +20,8 @@ export type SessionConfig = {
   hints: string[]
   /** 已组好的 context 对象（settings.ts 的 buildContext）；空对象则不发 */
   context: Record<string, unknown>
+  /** 端点检测开不开（settings.endpoint）。关着时调用方要在停顿后自己调 finalize() */
+  endpoint: boolean
 }
 
 export type SessionStatus = 'idle' | 'connecting' | 'live' | 'reconnecting' | 'error'
@@ -27,10 +29,28 @@ export type SessionStatus = 'idle' | 'connecting' | 'live' | 'reconnecting' | 'e
 export type SessionEvents = {
   onResponse: (r: SonioxResponse, segment: number) => void
   onStatus: (s: SessionStatus, detail: string) => void
+  /** 网络慢到开始丢音频了（true）／又发得出去了（false）。只在变化时调 */
+  onNet?: (slow: boolean) => void
 }
 
-/** 断线期间最多积压 60 秒音频（§4.2），再多只进录音不进转写 */
-const BACKLOG_BYTES = 32000 * 60
+// ── 实时字幕要的是「跟得上」，不是「一个字不少」──
+// 这段原先是从 meeting-notes 原样搬来的：断线时攒 60 秒、连上后全部补发，网络卡住时在 WebSocket 里无限堆。
+// 真机诊断读数（0.1.4，蜂窝网络）：压着 86 秒音频没发出去、识别落后 34 秒。每卡一次就永久落后一截，
+// 只有退出重进才清得掉 —— 这就是「用几分钟后延迟越来越高」。hear 不录不存，丢几个字无所谓，所以三处都改成丢：
+/** 没连上时只留最后这么多音频（1 秒）：够把重连那一下的头一个字接上，不会一连上就落后 */
+const BACKLOG_BYTES = 32000 * 1
+/** WebSocket 里压着没发出去的音频超过这么多（3 秒）就不再往里塞，新来的直接丢 */
+const MAX_BUFFERED = 32000 * 3
+/** 一直塞不进去这么久：这条连接算是死了，扔掉重连（重连不补发） */
+const STALL_MS = 6000
+/** 识别落后超过这么多，并且持续 LAG_HOLD_MS：重开一条连接从现在听起，等于替用户「退出重进」 */
+const LAG_RESET_MS = 6000
+const LAG_HOLD_MS = 4000
+/** 一条连接至少活这么久才允许因为落后而重开，免得网络差的时候来回重连 */
+const MIN_SESSION_MS = 15_000
+
+/** 丢了多少、重开了几次（诊断读数用；跨会话累计，整个页面生命周期内不清零） */
+export const stats = { droppedMs: 0, resets: 0 }
 const KEEPALIVE_MS = 10_000
 /** 单会话上限 300 分钟，提前一点主动换段 */
 const SEGMENT_MAX_MS = 290 * 60_000
@@ -71,6 +91,19 @@ export class SonioxSession {
   lagMs: number | null = null
   /** 还压在 WebSocket 里没发到网上的字节数。一直涨＝上行网络跟不上 */
   get buffered(): number { return this.ws?.bufferedAmount ?? 0 }
+  /** 这条连接是什么时候连上的 */
+  private openedAt = 0
+  /** 从什么时候起一直塞不进去（0＝现在塞得进） */
+  private chokedSince = 0
+  /** 从什么时候起识别一直落后太多（0＝现在不落后） */
+  private lagSince = 0
+  /** 正在因为网络慢而丢音频 */
+  private slow = false
+  private setSlow(v: boolean) {
+    if (this.slow === v) return
+    this.slow = v
+    this.ev.onNet?.(v)
+  }
   private keepalive: ReturnType<typeof setInterval> | null = null
   private segmentTimer: ReturnType<typeof setTimeout> | null = null
   private retryDelay = 1000
@@ -114,9 +147,13 @@ export class SonioxSession {
       ws.send(JSON.stringify(this.configJson()))
       this.retryDelay = 1000
       this.setStatus('live')
-      // 断线期间攒下的先补发
+      // 断线期间攒下的先补发（最多 1 秒，见 BACKLOG_BYTES）
       this.sentBytes = 0
       this.lagMs = null
+      this.openedAt = Date.now()
+      this.chokedSince = 0
+      this.lagSince = 0
+      this.setSlow(false)
       for (const b of this.backlog) { ws.send(b); this.sentBytes += b.byteLength }
       this.backlog = []
       this.backlogBytes = 0
@@ -142,7 +179,19 @@ export class SonioxSession {
         return
       }
       // 16 kHz 16 bit 单声道 = 每毫秒 32 字节
-      if (r.tokens?.length && typeof r.total_audio_proc_ms === 'number') this.lagMs = this.sentBytes / 32 - r.total_audio_proc_ms
+      if (r.tokens?.length && typeof r.total_audio_proc_ms === 'number') {
+        this.lagMs = this.sentBytes / 32 - r.total_audio_proc_ms
+        // 落后太多且一直没追上：这条连接上的字幕已经不是「现在」的了，重开
+        const now = Date.now()
+        if (this.lagMs <= LAG_RESET_MS) this.lagSince = 0
+        else if (!this.lagSince) this.lagSince = now
+        else if (now - this.lagSince > LAG_HOLD_MS && now - this.openedAt > MIN_SESSION_MS) {
+          const lag = (this.lagMs / 1000).toFixed(1)
+          if (r.tokens?.length) this.ev.onResponse(r, seg)
+          this.restart(`识别落后 ${lag} 秒`)
+          return
+        }
+      }
       if (r.tokens?.length) this.ev.onResponse(r, seg)
       if (r.finished) console.log('[soniox] finished, segment', seg)
     }
@@ -168,8 +217,9 @@ export class SonioxSession {
       // 按人换行要靠它。和端点检测一起开会降低区分准确率（官方说明），这里换行错一两次无妨
       enable_speaker_diarization: true,
       enable_language_identification: true,
-      // 听障场景延迟优先：端点检测让每句话一停就定稿，不等下一句把它顶出来
-      enable_endpoint_detection: true,
+      // 默认开：听障场景延迟优先，每句话一停就定稿，不等下一句把它顶出来。
+      // 和说话人区分一起开会降低区分准确率（官方说明），所以做成可选：关掉后由 main 在停顿后发 finalize
+      enable_endpoint_detection: this.cfg.endpoint,
       ...(this.cfg.target ? { translation: { type: 'one_way', target_language: this.cfg.target } } : {}),
       ...(Object.keys(context).length ? { context } : {}),
     }
@@ -203,11 +253,37 @@ export class SonioxSession {
     this.openSocket()
   }
 
-  /** 音频帧。没连上时积压（上限 60 秒） */
+  /**
+   * 扔掉当前连接，马上重开一条。和 rotate() 的区别：不等旧连接把话说完（它要么堵着、要么已经落后了）。
+   * 旧连接上还没定稿的半句话就不要了
+   */
+  private restart(why: string): void {
+    console.warn(`[soniox] 重开连接：${why}`)
+    stats.resets++
+    const ws = this.ws
+    this.cleanupSocket()
+    try { ws?.close() } catch { /* */ }
+    this.backlog = []
+    this.backlogBytes = 0
+    this.openSocket()
+  }
+
+  /** 音频帧。没连上时只留最后 1 秒；连着但网络塞不进去时直接丢 */
   sendAudio(pcm: Uint8Array): void {
     if (!this.wantOpen) return
     const ws = this.ws
     if (ws && ws.readyState === WebSocket.OPEN) {
+      if (ws.bufferedAmount > MAX_BUFFERED) {
+        stats.droppedMs += pcm.byteLength / 32
+        this.setSlow(true)
+        const now = Date.now()
+        if (!this.chokedSince) this.chokedSince = now
+        else if (now - this.chokedSince > STALL_MS) this.restart(`网络 ${STALL_MS / 1000} 秒发不出去`)
+        return
+      }
+      this.chokedSince = 0
+      // 压着的降到 1 秒以内才算缓过来：贴着 3 秒那条线来回跳的话，提示会一闪一闪
+      if (this.slow && ws.bufferedAmount < MAX_BUFFERED / 3) this.setSlow(false)
       ws.send(pcm)
       this.sentBytes += pcm.byteLength
       this.lastSentAt = Date.now()
@@ -216,7 +292,9 @@ export class SonioxSession {
     this.backlog.push(pcm)
     this.backlogBytes += pcm.byteLength
     while (this.backlogBytes > BACKLOG_BYTES && this.backlog.length) {
-      this.backlogBytes -= this.backlog.shift()!.byteLength
+      const old = this.backlog.shift()!
+      this.backlogBytes -= old.byteLength
+      stats.droppedMs += old.byteLength / 32
     }
   }
 

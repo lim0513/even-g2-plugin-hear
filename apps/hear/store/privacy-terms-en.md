@@ -18,17 +18,19 @@ All of the following is stored **on your phone only**, in the storage area the
 Even app gives to this package:
 
 - Your Soniox API key, so you do not have to retype it.
+- Your Claude API key, if you choose to enter one for the optional AI answers.
 - Your settings: translation target, language hints, microphone choice, quiet
   timeout and interface language.
 
-That is all. **Captions are not stored**: the app keeps only the last few
-thousand characters in memory while it is open, and nothing is written to disk.
+That is all. **Captions are not stored**: the app keeps the captions of the
+current session in memory while it is open so you can scroll back on the phone,
+and nothing is written to disk. Closing the app discards them.
 There is no recording. Uninstalling the app removes the key and settings.
 
 ### What the app sends, and to whom
 
-The app contacts exactly one third party, and only after you press Start (or
-long-press on the glasses) and only while it is listening:
+The app contacts Soniox, and only after you press Start (or long-press on the
+glasses) and only while it is listening:
 
 - **stt-rt.soniox.com** — the microphone audio is streamed to Soniox in real
   time for transcription and, if enabled, translation. Soniox returns text;
@@ -41,8 +43,21 @@ to your Soniox account or to anything you send there.
 
 Without an API key the app does nothing with audio and sends nothing anywhere.
 
+**Optional AI answers.** If, and only if, you enter a Claude API key in Settings,
+a single tap on the glasses sends text to a second service:
+
+- **api.anthropic.com** — the text of the last stretch of conversation (the
+  captions, at most about 800 characters; no audio) is sent to Anthropic's Claude
+  API, which returns a short answer that the app displays. Nothing is sent
+  unless you tap.
+
+Anthropic processes this data under its own terms and privacy policy
+(https://www.anthropic.com). You are the Anthropic customer; the developer has
+no access to your Anthropic account or to anything you send there. Leave the key
+empty and this service is never contacted.
+
 There is no analytics, no telemetry, no crash reporting, no advertising and no
-other third-party service of any kind. Nothing is sent to the developer.
+third-party service other than the two named above. Nothing is sent to the developer.
 
 ### Permissions
 
@@ -50,8 +65,8 @@ other third-party service of any kind. Nothing is sent to the developer.
   microphones (default).
 - **Phone microphone** — alternative input for larger rooms; used only when you
   select it.
-- **Network** — restricted to the Soniox host above. The app never contacts any
-  other host.
+- **Network** — restricted to the Soniox host above and, only if you enter a
+  Claude API key, the Anthropic host above. The app never contacts any other host.
 
 No other permission is requested or used: no camera, no photo library, no
 location, no contacts, no push notifications.

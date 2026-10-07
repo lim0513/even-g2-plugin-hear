@@ -7,6 +7,7 @@ The glasses listen to the people around you, [Soniox](https://soniox.com/) trans
 - **Open and listen.** No meetings, no sessions, no setup beyond an API key.
 - **Nothing is recorded or stored.** Audio is streamed to Soniox while captions are on and is not kept anywhere by this app.
 - **Any spoken language** is recognised; translate into 60 languages or show the original only.
+- **Optional AI answers (experimental).** Add your own Claude API key and a tap on the glasses sends the last stretch of conversation (text only) to Claude; a short answer appears on the glasses.
 - **Speaker changes are marked.** A line that starts with `•` is a different person talking.
 - **You only pay while people talk.** The connection drops after a quiet period and comes back when someone speaks.
 - Interface in English, 日本語 and 中文.
@@ -23,6 +24,7 @@ On the glasses:
 | Gesture | Action |
 |---|---|
 | Long-press | Start, pause, resume |
+| Tap | Ask Claude about the last stretch of conversation (only with a Claude API key set); tap again to close, swipe to page |
 | Menu | Clear the screen |
 | Double-tap | Exit |
 
@@ -34,9 +36,11 @@ On the phone (the plugin page inside the Even App):
 | Translate to | Target language, or off |
 | Show original while translating | On: 3 lines original + 6 lines translation. Off: all 9 lines translation |
 | Speech already in the target language | Show it as usual (default), or hide it if you understand that language anyway |
+| When a sentence is finalised | Fast (default): as soon as the speaker stops. Accurate: waits a little longer, which separates speakers more reliably and cuts sentences less, at the cost of about a second |
 | Microphone | Glasses, or the phone (for example on a table in a larger room) |
 | Languages spoken around you | Hints for recognition, not a restriction |
 | Quiet timeout | Minutes of silence before disconnecting from Soniox; 0 keeps the connection open |
+| Clear after idle | Seconds without any new caption text before the glasses are cleared (default 15); new text restarts the count; 0 never clears |
 
 ## Development
 
@@ -79,6 +83,7 @@ Paths are relative to `apps/hear`.
 | `src/ui.ts` | Phone-side settings page |
 | `src/settings.ts`, `src/kv.ts` | Settings model and SDK storage with timeouts |
 | `src/i18n.ts` | Interface strings in three languages |
+| `src/ai.ts` | One question to Claude over the Anthropic SDK, streamed back |
 | `src/demo-feed.ts` | Fake Soniox responses for `?demo=1` |
 | `store/` | Store listing text, privacy terms, screenshots |
 
@@ -86,7 +91,7 @@ Code comments are mostly in Chinese. Some of them refer to notes and sibling pro
 
 ## Privacy
 
-The app contacts one third party, Soniox, and only while captions are on. See [`store/privacy-terms-en.md`](apps/hear/store/privacy-terms-en.md).
+The app contacts Soniox, and only while captions are on. If you add a Claude API key, a tap on the glasses also sends recent caption text (no audio) to Anthropic. See [`store/privacy-terms-en.md`](apps/hear/store/privacy-terms-en.md).
 
 ## License
 
