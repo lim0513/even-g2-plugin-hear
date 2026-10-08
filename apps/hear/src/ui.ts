@@ -65,7 +65,9 @@ export function mountUi(settings: Settings, h: UiHandlers) {
   cur = settings
   handlers = h
   const app = document.getElementById('app')!
-  const keyLink = '<a href="https://console.soniox.com" target="_blank" rel="noreferrer">console.soniox.com</a>'
+  // 只写网址的文字，不做成链接、也不带 https://：商店审核会扫包里出现的网址，不在 network.whitelist 里的会被点名，
+  // 而这个地址应用自己从不访问（只是告诉用户去哪儿申请 Key）。长按可以整段选中复制
+  const keyLink = '<span class="url">console.soniox.com</span>'
   const on = (b: boolean) => (b ? ' checked' : '')
   const sel = (v: string, c: string) => (v === c ? ' selected' : '')
   document.title = t('app.title')
@@ -511,6 +513,7 @@ function injectStyles() {
     .first .field > label { font-size: 13px; color: var(--dim); letter-spacing: 0; }
     .hint { margin-top: 8px; }
     .hint a { color: var(--accent); text-underline-offset: 3px; }
+    .url { color: var(--text); user-select: all; -webkit-user-select: all; }
     input[type=text], input[type=password], input[type=number], select { height: 48px; border: 0; border-radius: 12px; background: var(--input);
       padding: 0 14px; font-size: 16px; box-sizing: border-box; }
     .field input[type=text], .field input[type=password] { width: 100%; }
