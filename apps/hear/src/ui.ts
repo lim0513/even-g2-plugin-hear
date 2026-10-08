@@ -146,7 +146,7 @@ export function mountUi(settings: Settings, h: UiHandlers) {
       </div>
 
       <div class="group"><h3>${t('grp.key')}</h3>
-        ${field('Soniox API Key', '', `<div class="key-wrap"><input id="apiKey" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="${t('apiKey.placeholder')}" value="${esc(settings.apiKey)}" /><button id="revealKey" type="button" class="plain">${t('show')}</button></div>`, 'apiKey')}
+        ${field('Soniox API Key', t('first.hint', { link: keyLink }), `<div class="key-wrap"><input id="apiKey" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="${t('apiKey.placeholder')}" value="${esc(settings.apiKey)}" /><button id="revealKey" type="button" class="plain">${t('show')}</button></div>`, 'apiKey')}
         ${line(t('lang'), '', `<select id="lang"><option value="auto"${sel('auto', settings.lang)}>${t('lang.auto')}</option>${LANGS.map((l) => `<option value="${l}"${sel(l, settings.lang)}>${LANG_NAMES[l]}</option>`).join('')}</select>`, 'lang')}
       </div>
 
