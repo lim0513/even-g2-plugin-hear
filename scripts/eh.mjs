@@ -43,7 +43,7 @@ function nextPort(exclude) {
 // 根目录实际装着的 SDK 版本；没装就退回一个已知可用的版本
 function sdkVersion() {
   const p = path.join(ROOT, 'node_modules', '@evenrealities', 'even_hub_sdk', 'package.json')
-  try { return readJson(p).version } catch { return '0.0.15' }
+  try { return readJson(p).version } catch { return '0.0.16' }
 }
 
 // 侧载地址：手机得能连到这台机器，所以必须挑真实的无线/有线网卡。
@@ -132,7 +132,7 @@ function scaffold(name) {
     app.package_id = `tech.limeng.${name.replace(/[^a-z0-9]/g, '')}`
     app.name = name
     app.min_sdk_version = sdk
-    app.min_app_version = '2.2.10'   // SDK 0.0.15 的下限；换 SDK 版本时 evenhub pack 会提示该改成多少
+    app.min_app_version = '2.2.10'   // SDK 0.0.15、0.0.16 的下限；换 SDK 版本时 evenhub pack 会提示该改成多少
     writeJson(appPath, app)
     notes.push(`package_id 暂定 ${app.package_id}，发布前改成你自己的`)
   }
