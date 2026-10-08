@@ -8,7 +8,8 @@ The glasses listen to the people around you, [Soniox](https://soniox.com/) trans
 - **Nothing is recorded or stored.** Audio is streamed to Soniox while captions are on and is not kept anywhere by this app.
 - **Any spoken language** is recognised; translate into 60 languages or show the original only.
 - **Optional AI answers (experimental).** Add your own Claude API key and a tap on the glasses sends the last stretch of conversation (text only) to Claude; a short answer appears on the glasses.
-- **Speaker changes are marked.** A line that starts with `•` is a different person talking.
+- **Speaker changes are marked.** A line that starts with `•` is a different person talking, on the glasses and on the phone.
+- **The newest words are the brightest.** On the glasses the latest two lines are at full brightness and earlier ones a step dimmer, so your eye lands on what is being said. This can be turned off.
 - **You only pay while people talk.** The connection drops after a quiet period and comes back when someone speaks.
 - Interface in English, 日本語 and 中文.
 
@@ -28,17 +29,19 @@ On the glasses:
 | Menu | Clear the screen |
 | Double-tap | Exit |
 
-On the phone (the plugin page inside the Even App):
+On the phone (the plugin page inside the Even App) the page is the conversation itself: what is being said right now is the largest text, earlier utterances sit above it, and a one-line status at the top uses the same marks as the glasses (`■` listening, `||` paused, `□` waiting, `!` a problem). The first time, it asks only for the Soniox key. Settings open from the button at the top once captions are paused:
 
 | Setting | What it does |
 |---|---|
 | Soniox API Key | Stored only on the phone |
 | Translate to | Target language, or off |
-| Show original while translating | On: 3 lines original + 6 lines translation. Off: all 9 lines translation |
-| Speech already in the target language | Show it as usual (default), or hide it if you understand that language anyway |
-| When a sentence is finalised | Fast (default): as soon as the speaker stops. Accurate: waits a little longer, which separates speakers more reliably and cuts sentences less, at the cost of about a second |
+| Show the original on the glasses too | On: 3 lines original + 6 lines translation. Off: all 9 lines translation |
+| Also show speech already in the target language | On (default): shown as usual. Off: left off the glasses if you understand that language anyway; the phone still keeps it |
+| When a sentence is finalised | Accurate (default): waits a little longer, which separates speakers more reliably and cuts sentences less, at a measured cost of about 0.2 s. Fast: as soon as the speaker stops |
 | Microphone | Glasses, or the phone (for example on a table in a larger room) |
 | Languages spoken around you | Hints for recognition, not a restriction |
+| Lean harder toward these languages | Try it when one language comes out written as another. Best effort, not a hard limit |
+| Brighter newest two lines | On (default): the latest two lines on the glasses are brightest, earlier ones a step dimmer, and text fills from the bottom. Off: everything at full brightness, filling from the top |
 | Quiet timeout | Minutes of silence before disconnecting from Soniox; 0 keeps the connection open |
 | Clear after idle | Seconds without any new caption text before the glasses are cleared (default 15); new text restarts the count; 0 never clears |
 
@@ -63,8 +66,9 @@ Useful while developing (dev server only; all of this is stripped from productio
 | `?lang=en` / `ja` / `zh` | Force the interface language |
 | `?tr=1` / `?tr=0` | Translation on or off |
 | `?src=1` / `?src=0` | Show or hide the original while translating |
+| `?tiers=1` / `?tiers=0` | Brighter newest two lines on or off, to compare the two glasses layouts |
 
-If captions start to lag, tap the version number at the bottom of the phone page: a line of live readings appears (audio from the glasses, Soniox, network, display updates) that shows which stage is falling behind.
+If captions start to lag, tap the version number at the top right of the phone page: a line of live readings appears (audio from the glasses, Soniox, network, display updates) that shows which stage is falling behind.
 
 Put `VITE_SONIOX_KEY=...` in `apps/hear/.env.local` to avoid typing the key into the simulator. `.env.local` is git-ignored.
 
@@ -80,7 +84,8 @@ Paths are relative to `apps/hear`.
 | `src/soniox.ts` | Real-time WebSocket session, reconnects, quiet-period disconnect |
 | `src/captions.ts` | Token stream → two caption streams (original, translation); pure logic |
 | `src/layout.ts` | Glasses layout: fixed text containers, line wrapping; no SDK dependency |
-| `src/ui.ts` | Phone-side settings page |
+| `src/ui.ts` | Phone-side page: status, conversation, settings |
+| `ui-test.html`, `src/ui-test.ts` | The phone page in each state without the glasses bridge (dev server only): `/ui-test.html?view=first|live|plain|paused|settings|error|ai&lang=zh` |
 | `src/settings.ts`, `src/kv.ts` | Settings model and SDK storage with timeouts |
 | `src/i18n.ts` | Interface strings in three languages |
 | `src/ai.ts` | One question to Claude over the Anthropic SDK, streamed back |

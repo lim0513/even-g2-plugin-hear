@@ -69,6 +69,7 @@ if (import.meta.env.DEV) {
   if (q.get('ep')) settings.endpoint = q.get('ep') === '1'   // 端点检测开关
   if (q.get('clear')) settings.clearSec = Number(q.get('clear')) || 0   // 自动清屏秒数（测试时调短）
   if (q.get('slow')) netSlow = true   // 看顶栏「网络慢」提示的样子
+  if (q.get('tiers')) settings.tiers = q.get('tiers') === '1'   // 眼镜上「最新两行更亮」开／关，对比用
   if (import.meta.env.VITE_SONIOX_KEY && !settings.apiKey && !q.get('demo')) settings.apiKey = String(import.meta.env.VITE_SONIOX_KEY)
   // .env.local 里 VITE_CLAUDE_KEY=...：模拟器里点不到手机页，没法手填。只在开发期生效，打包时整段摇掉
   if (import.meta.env.VITE_CLAUDE_KEY && !settings.claudeKey) settings.claudeKey = String(import.meta.env.VITE_CLAUDE_KEY)
@@ -97,10 +98,28 @@ const SAFE_NAMES: Record<string, string> = { zh: '中文', ja: '日本語', en: 
 const targetLabel = () => SAFE_NAMES[settings.target] ?? settings.target.toUpperCase()
 
 
+/** 手机状态行里的目标语言名：中/日/英按界面语言说，其余用大写代码 */
+function phoneTargetName(): string {
+  const key = 'lname.' + settings.target
+  const name = t(key)
+  return name === key ? settings.target.toUpperCase() : name
+}
+
 /** 回答写完后在眼镜上留多久 */
 const AI_HOLD_MS = 25_000
-/** 眼镜一屏的行数（top 3 + bottom 6）。一行约 27 个汉字或 55 个半角字符（layout.ts 的 COLS） */
-const AI_ROWS = ROWS.top + ROWS.bottom
+/**
+ * 回答一屏的行数：top 3 + mid 4。最下面的 now 两行留给「怎么关、怎么翻页」（空一行 + 一行提示，最暗）。
+ * 一行约 27 个汉字或 55 个半角字符（layout.ts 的 COLS）
+ */
+const AI_ROWS = ROWS.top + ROWS.mid
+/** 字幕区一共几行 */
+const ALL_ROWS = ROWS.top + ROWS.mid + ROWS.now
+/** 占位的空行。不能用空串或半角空格行：整块内容为空时 protobuf 不发，旧字会留在真机上（见 blank） */
+const PAD = '　'
+/** 把 lines 靠下放进 rows 行：不够的在上面垫空行。一行都没有就返回空（整块清掉） */
+const anchor = (lines: string[], rows: number): string[] =>
+  lines.length ? [...Array<string>(Math.max(0, rows - lines.length)).fill(PAD), ...lines] : []
+const join = (lines: string[]) => lines.join('\n')
 
 /** 回答折行后分成几屏、现在看第几屏 */
 function aiPages(a: AiState): { lines: string[]; pages: number; page: number } {
@@ -203,9 +222,11 @@ function screen(): Screen {
     const head = pg.pages > 1 ? `${state}  ${pg.page + 1}/${pg.pages}` : state
     return {
       header: `> ${head}`, tr: '',
-      top: lines.slice(0, ROWS.top).join('\n'),
-      bottom: lines.slice(ROWS.top).join('\n'),
-      dim: { header: MID, tr: DIM, top: BRIGHT, bottom: BRIGHT },
+      top: join(lines.slice(0, ROWS.top)),
+      mid: join(lines.slice(ROWS.top)),
+      // 最下面一行：怎么关、怎么翻页。上面空一行，和回答隔开
+      now: join([PAD, t(pg.pages > 1 ? 'g.ai.closeNext' : 'g.ai.close')]),
+      dim: { header: MID, tr: DIM, top: BRIGHT, mid: BRIGHT, now: DIM },
     }
   }
   let head: string
@@ -218,24 +239,37 @@ function screen(): Screen {
   else if (netSlow && mode === 'live') head += `   ${t('g.netSlow')}`
   const tr = translating() ? t('g.translate.on', { l: targetLabel() }) : ''
   const hdim = mode === 'live' && !notice && !netSlow ? DIM : MID
+  // 亮度：
+  //   tiers 开（默认）：最新的两行（now）最亮，前面的（mid、单流时还有 top）暗一档；字靠下放，新字从最下面顶上来
+  //   tiers 关：和 0.1.x 一样，字从上往下填、全部最亮
+  //   暂停：留在屏幕上的字全部降到最暗 —— 一眼看得出是停住的，又还能回头读
+  const paused = mode === 'paused'
+  const tiers = settings.tiers
+  const older = paused ? DIM : tiers ? MID : BRIGHT
+  const newest = paused ? DIM : BRIGHT
   if (translating() && settings.showSource) {
+    // 原话 3 行在上（备查用，最暗一档；tiers 关时是原来的中等亮度），译文 6 行在下
+    const dst = lastLines(captions.screenDst(), ROWS.mid + ROWS.now)
+    const rows = tiers ? anchor(dst, ROWS.mid + ROWS.now) : dst
     return {
       header: head, tr,
-      top: lastLines(captions.screenSrc(), ROWS.top).join('\n'),
-      bottom: lastLines(captions.screenDst(), ROWS.bottom).join('\n'),
-      dim: { header: hdim, tr: DIM, top: MID, bottom: BRIGHT },
+      top: join(lastLines(captions.screenSrc(), ROWS.top)),
+      mid: join(rows.slice(0, ROWS.mid)),
+      now: join(rows.slice(ROWS.mid)),
+      dim: { header: hdim, tr: DIM, top: paused || tiers ? DIM : MID, mid: older, now: newest },
     }
   }
-  // 只出一种文字（不翻译＝原文；翻译但不显示原文＝译文）：9 行，前 3 行放 top、后 6 行放 bottom，
-  // 看起来是一整块。说目标语言的话本来就进译文流（captions.ts），所以藏掉原文不会漏掉它们
-  const lines = lastLines(translating() ? captions.screenDst() : captions.screenSrc(), ROWS.top + ROWS.bottom)
-  // 不足 9 行时从上往下填（top 先满），否则 top 空着、中间出现一截空白（截图踩过）
-  const topN = Math.min(ROWS.top, lines.length)
+  // 只出一种文字（不翻译＝原文；翻译但不显示原文＝译文）：9 行，top + mid + now 连着放，看起来是一整块。
+  // 说目标语言的话本来就进译文流（captions.ts），所以藏掉原文不会漏掉它们
+  const lines = lastLines(translating() ? captions.screenDst() : captions.screenSrc(), ALL_ROWS)
+  // tiers 关时不足 9 行从上往下填（top 先满），否则 top 空着、中间出现一截空白（截图踩过）
+  const rows = tiers ? anchor(lines, ALL_ROWS) : lines
   return {
     header: head, tr,
-    top: lines.slice(0, topN).join('\n'),
-    bottom: lines.slice(topN).join('\n'),
-    dim: { header: hdim, tr: DIM, top: BRIGHT, bottom: BRIGHT },
+    top: join(rows.slice(0, ROWS.top)),
+    mid: join(rows.slice(ROWS.top, ROWS.top + ROWS.mid)),
+    now: join(rows.slice(ROWS.top + ROWS.mid)),
+    dim: { header: hdim, tr: DIM, top: older, mid: older, now: newest },
   }
 }
 
@@ -388,19 +422,20 @@ function openSession() {
   if (!settings.apiKey || session) return
   session = new SonioxSession({
     apiKey: settings.apiKey, target: translating() ? settings.target : '', hints: parseHints(settings.hints), context: {},
+    strict: settings.hintsStrict,
     endpoint: settings.endpoint,
   }, {
     onResponse: (r, seg) => feedCaptions(r, seg),
     onNet: (slow) => {
       netSlow = slow
       if (slow) setNote(t('note.netSlow'), 'warn')
-      else if (session?.status === 'live') setNote(t('glasses.help'))
+      else if (session?.status === 'live') setNote('')
       void render()
     },
     onStatus: (s, detail) => {
       notice = s === 'live' || s === 'idle' ? '' : s === 'error' ? `! ${detail}` : t('g.reconnecting')
       if (s === 'error') setNote(t('note.captionsStopped', { d: detail }), 'warn')
-      else if (s === 'live') setNote(t('glasses.help'))
+      else if (s === 'live') setNote('')
       syncStatus()
       void render()
     },
@@ -423,7 +458,7 @@ function syncStatus() {
   if (mode === 'quiet') { setStatus('quiet'); return }
   const ss = session?.status
   if (ss === 'error') setStatus('error', notice.replace(/^! /, ''))
-  else if (ss === 'live') setStatus('live', translating() ? `${t('translate')} ${targetLabel()}` : '')
+  else if (ss === 'live') setStatus('live', translating() ? phoneTargetName() : '')
   else if (ss === 'reconnecting') setStatus('reconnecting')
   else setStatus('connecting')
 }
@@ -452,7 +487,7 @@ function togglePause() { if (mode === 'paused') void goLive(); else void pause()
 function applySettings(next: Settings) {
   const micChanged = next.mic !== settings.mic
   const sessionChanged = next.apiKey !== settings.apiKey || next.target !== settings.target
-    || next.translate !== settings.translate || next.hints !== settings.hints || next.endpoint !== settings.endpoint
+    || next.translate !== settings.translate || next.hints !== settings.hints || next.hintsStrict !== settings.hintsStrict || next.endpoint !== settings.endpoint
   settings = next
   captions.target = translating() ? settings.target : ''
   captions.hideTargetSpeech = !settings.showTargetSpeech
@@ -523,7 +558,7 @@ await mount(bridge)
 // 启动时不自动开听：Soniox 按连接时长计费，由用户按「开始」（手机）或单击（眼镜）再连
 mode = 'paused'
 if (settings.apiKey) { setStatus('paused'); setNote(t('note.pressStart')); void render() }
-else { setStatus('setup'); setNote(t('note.noKey'), 'warn'); void render() }
+else { setStatus('setup'); setNote(t('note.noKey')); void render() }
 
 // 安静 N 分钟断开 Soniox（麦继续开着，靠音量判断什么时候重连）
 setInterval(() => {

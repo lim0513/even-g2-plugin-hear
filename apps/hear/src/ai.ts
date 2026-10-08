@@ -8,14 +8,57 @@
 // 直连在宿主 WebView 里行不行，是这个分支要验证的第一件事。
 import Anthropic from '@anthropic-ai/sdk'
 
-export const AI_MODELS = [
+export type AiModelInfo = { id: string; name: string }
+/**
+ * 内置的三个：查不到模型列表时（没填 Key、没网、接口被拦）用它们，查到了也排在最前面。
+ * 能选的模型不是写死的 —— 设置页打开时用用户的 Key 问一遍「现在能用哪些」（listModels），新出的模型会自己出现
+ */
+export const AI_MODELS: readonly AiModelInfo[] = [
   { id: 'claude-opus-5-5', name: 'Claude Opus 5.5' },
   { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5' },
   { id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5' },
-] as const
-export type AiModel = typeof AI_MODELS[number]['id']
+]
+export type AiModel = string
 export const DEFAULT_AI_MODEL: AiModel = 'claude-opus-5-5'
-export const isAiModel = (v: string): v is AiModel => AI_MODELS.some((m) => m.id === v)
+export const isAiModel = (v: string): v is AiModel => /^claude-[a-z0-9.-]+$/.test(v)
+
+/**
+ * 内置的排前面，查到的其余模型跟在后面。查到的 id 常带日期（claude-haiku-4-5-20251001）：
+ * 和内置的是同一个模型，不重复列。keep＝正在用的那个，不在列表里也留着，不悄悄换成别的
+ */
+export function mergeModels(found: readonly AiModelInfo[], keep = ''): AiModelInfo[] {
+  const list: AiModelInfo[] = [...AI_MODELS]
+  for (const f of found) {
+    if (!isAiModel(f.id)) continue
+    if (!list.some((m) => f.id === m.id || f.id.startsWith(m.id + '-'))) list.push({ id: f.id, name: f.name || f.id })
+  }
+  if (keep && isAiModel(keep) && !list.some((m) => m.id === keep)) list.push({ id: keep, name: keep })
+  return list
+}
+
+/** 这把 Key 现在能用的模型，新的在前。查不到返回空数组（调用方就用内置的） */
+export async function listModels(apiKey: string): Promise<AiModelInfo[]> {
+  if (!apiKey) return []
+  try {
+    const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true, maxRetries: 1, timeout: 10_000 })
+    const out: AiModelInfo[] = []
+    for await (const m of client.models.list({ limit: 100 })) {
+      out.push({ id: m.id, name: m.display_name || m.id })
+      if (out.length >= 100) break
+    }
+    return out
+  } catch (e) {
+    console.warn('[ai] 模型列表没查到：', e instanceof Error ? e.message : e)
+    return []
+  }
+}
+
+/**
+ * 发请求时不带「推理强度」和「服务端后备」这两个额外参数的模型：Haiku（不认 effort，会报错），
+ * 以及实际发过一次、因为参数被拒了的（查到的新模型，程序不认识它的脾气，试出来的）
+ */
+const plainModels = new Set<string>()
+const isPlain = (model: string) => model.includes('haiku') || plainModels.has(model)
 
 export type AiErrorKind = 'auth' | 'rate' | 'net' | 'refusal' | 'other'
 export type AiResult = {
@@ -56,11 +99,11 @@ export function ask(o: { apiKey: string; model: AiModel; lang: string; transcrip
   let firstMs: number | null = null
   let aborted = false
 
-  // Haiku 4.5 不认 effort（会报错），也不带思考，本来就是三个里最快的。
-  // Opus 5.5 / Sonnet 5.5 的思考关不掉（或不该关），用最低的 effort 把首字时间压下来；
-  // 这两个模型的安全分类器可能拒答，打开服务端后备（被拒时由服务端换一个模型重跑同一个请求）。
-  const fast = o.model === 'claude-haiku-4-5'
-  const stream = client.beta.messages.stream({
+  // Haiku 不认 effort（会报错），也不带思考，本来就是最快的。
+  // Opus / Sonnet 这一类的思考关不掉（或不该关），用最低的 effort 把首字时间压下来；
+  // 它们的安全分类器可能拒答，打开服务端后备（被拒时由服务端换一个模型重跑同一个请求）。
+  // 列表是查来的，会有程序不认识的模型：先按后一种发，因为参数被拒（400）就记下来、去掉这两个参数再发一次
+  const open = (fast: boolean) => client.beta.messages.stream({
     model: o.model,
     max_tokens: 4000,   // 思考的 token 也算在里面，留够；回答的长短靠提示词管
     system: system(o.lang),
@@ -73,7 +116,10 @@ export function ask(o: { apiKey: string; model: AiModel; lang: string; transcrip
     }),
   })
 
-  const done = (async (): Promise<AiResult> => {
+  let stream = open(isPlain(o.model))
+  let retried = isPlain(o.model)
+
+  const attempt = async (): Promise<AiResult> => {
     let model: string = o.model
     try {
       for await (const event of stream) {
@@ -92,6 +138,13 @@ export function ask(o: { apiKey: string; model: AiModel; lang: string; transcrip
     } catch (e) {
       const totalMs = Date.now() - t0
       if (aborted || e instanceof Anthropic.APIUserAbortError) return { text, firstMs, totalMs, model, aborted: true }
+      if (e instanceof Anthropic.BadRequestError && !retried && !text) {
+        retried = true
+        plainModels.add(o.model)
+        console.warn(`[ai] ${o.model} 不认额外参数，去掉再发一次：${e.message}`)
+        stream = open(true)
+        return attempt()
+      }
       // 从具体到一般。连不上（含跨域被拦 —— WebKit 只回一句 Load failed）单独一类，这是直连最可能出的问题
       if (e instanceof Anthropic.AuthenticationError || e instanceof Anthropic.PermissionDeniedError) {
         return { text, firstMs, totalMs, model, error: { kind: 'auth', detail: e.message } }
@@ -101,7 +154,8 @@ export function ask(o: { apiKey: string; model: AiModel; lang: string; transcrip
       if (e instanceof Anthropic.APIError) return { text, firstMs, totalMs, model, error: { kind: 'other', detail: `${e.status ?? ''} ${e.message}`.trim() } }
       return { text, firstMs, totalMs, model, error: { kind: 'other', detail: e instanceof Error ? e.message : String(e) } }
     }
-  })()
+  }
+  const done = attempt()
 
   return { abort: () => { aborted = true; stream.abort() }, done }
 }

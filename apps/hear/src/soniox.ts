@@ -18,6 +18,8 @@ export type SessionConfig = {
   target: string
   /** language_hints；空数组则不发，全靠自动识别 */
   hints: string[]
+  /** language_hints_strict（更强地偏向 hints，不是硬限定）；hints 为空时不发 */
+  strict?: boolean
   /** 已组好的 context 对象（settings.ts 的 buildContext）；空对象则不发 */
   context: Record<string, unknown>
   /** 端点检测开不开（settings.endpoint）。关着时调用方要在停顿后自己调 finalize() */
@@ -222,6 +224,7 @@ export class SonioxSession {
       num_channels: 1,
       // 只提示 ja 时，中文会被硬听成日语（真 Key 实测）。会议里会出现的语言都提示上，靠语言识别切换
       ...(this.cfg.hints.length ? { language_hints: this.cfg.hints } : {}),
+      ...(this.cfg.hints.length && this.cfg.strict ? { language_hints_strict: true } : {}),
       // 按人换行要靠它。和端点检测一起开会降低区分准确率（官方说明），这里换行错一两次无妨
       enable_speaker_diarization: true,
       enable_language_identification: true,

@@ -101,11 +101,12 @@ type Side = 'src' | 'dst'
 
 /**
  * 手机记录里的一段。
- *   say：一个人连着说的一段话 —— src 原话，dst 它的译文（没开翻译时 dst 为空；别人直接说目标语言时只有 dst）
+ *   say：一个人连着说的一段话 —— src 原话，dst 它的译文（没开翻译时 dst 为空；别人直接说目标语言时只有 dst）；
+ *        turn＝和上一段发言不是同一个人（手机上在这段前面画「•」，和眼镜上换人的记号一样）
  *   ai： 插进来的 AI 回答
  */
 export type Item =
-  | { kind: 'say'; src: string; dst: string }
+  | { kind: 'say'; src: string; dst: string; turn: boolean }
   | { kind: 'ai'; text: string }
 
 /** 手机记录内部用的一段发言 */
@@ -234,17 +235,18 @@ export class Captions {
   /** 手机上的记录：一段一段的发言，原话和译文在一起，中间夹着 AI 的回答。本次打开期间不清 */
   items(): Item[] {
     const out: Item[] = []
+    // 上一段发言是谁说的。中间夹着 AI 的回答不算换人：同一个人接着说，前面不画记号
+    let prev: string | null = null
+    const say = (speaker: string, src: string, dst: string) => {
+      if (!src && !dst) return
+      out.push({ kind: 'say', src, dst, turn: prev !== null && prev !== speaker })
+      prev = speaker
+    }
     for (const s of this.segs) {
       if ('ai' in s) { out.push({ kind: 'ai', text: s.ai }); continue }
-      const src = (s.src + s.nfSrc).trim()
-      const dst = (s.dst + s.nfDst).trim()
-      if (src || dst) out.push({ kind: 'say', src, dst })
+      say(s.speaker, (s.src + s.nfSrc).trim(), (s.dst + s.nfDst).trim())
     }
-    for (const p of this.pending) {
-      const src = p.src.trim()
-      const dst = p.dst.trim()
-      if (src || dst) out.push({ kind: 'say', src, dst })
-    }
+    for (const p of this.pending) say(p.speaker, p.src.trim(), p.dst.trim())
     return out
   }
 

@@ -2,7 +2,7 @@
 import type { EvenAppBridge } from '@evenrealities/even_hub_sdk'
 import { kvGet, kvSet } from './kv.ts'
 import { LANG_CODES } from './languages.ts'
-import { DEFAULT_AI_MODEL, type AiModel } from './ai.ts'
+import { DEFAULT_AI_MODEL, type AiModel, type AiModelInfo } from './ai.ts'
 
 export type Settings = {
   /** 界面语言：'auto'＝跟手机，或 zh / ja / en */
@@ -28,6 +28,17 @@ export type Settings = {
   epV?: number
   /** language_hints，逗号分隔 */
   hints: string
+  /**
+   * language_hints_strict：让识别更强地偏向 hints 里的语言。别人说的日语被写成一串中文时用。
+   * 是「尽力而为」不是硬限定：Soniox 说只写一种语言时最可靠；实测（合成语音，hints 只写 ja）
+   * 说得清楚的中文照样写成中文，所以它大概只在模型拿不准的时候起作用。真实场合的效果没验过
+   */
+  hintsStrict: boolean
+  /**
+   * 眼镜上最新的两行最亮、前面的暗一档（layout.ts 的 mid / now）。关＝和 0.1.x 一样：字从上往下填、全部最亮。
+   * 做成开关是因为暗一档的字在强光下够不够清楚因人而异，真机上没来得及验
+   */
+  tiers: boolean
   mic: 'phone' | 'glasses'
   /** 安静多少分钟后断开 Soniox（省钱）；0＝不断 */
   quietMin: number
@@ -39,6 +50,8 @@ export type Settings = {
   /** Claude 的 API Key（AI 解答，试验）。空＝不启用，眼镜单击不做任何事 */
   claudeKey: string
   claudeModel: AiModel
+  /** 上次用这把 Claude Key 查到的模型列表：下次打开设置先显示它，查到新的再换 */
+  claudeModels?: AiModelInfo[]
 }
 
 export const DEFAULTS: Settings = {
@@ -51,6 +64,8 @@ export const DEFAULTS: Settings = {
   endpoint: false,
   epV: 2,
   hints: 'ja, zh',
+  hintsStrict: false,
+  tiers: true,
   mic: 'glasses',
   quietMin: 2,
   clearSec: 15,
