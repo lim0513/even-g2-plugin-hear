@@ -20,10 +20,12 @@ export type Settings = {
    */
   showTargetSpeech: boolean
   /**
-   * 端点检测：开＝一句话一停下 Soniox 就定稿，字幕和译文出得快（默认）；关＝多等一会儿，由我们在停顿后发定稿指令，
-   * 说话人区分更准、不容易把一句话从中间断开，代价是每句话的结尾晚一秒多
+   * 端点检测：开＝一句话一停下 Soniox 就定稿，字幕和译文出得快；关＝多等一会儿，由我们在停顿后发定稿指令，
+   * 说话人区分更准、不容易把一句话从中间断开，代价是每句话的结尾晚一秒多（默认。实际用下来快慢差得不多，准更要紧）
    */
   endpoint: boolean
+  /** 「默认改成准」那一次已经处理过的记号，见 loadSettings */
+  epV?: number
   /** language_hints，逗号分隔 */
   hints: string
   mic: 'phone' | 'glasses'
@@ -46,7 +48,8 @@ export const DEFAULTS: Settings = {
   translate: false,
   showSource: true,
   showTargetSpeech: true,
-  endpoint: true,
+  endpoint: false,
+  epV: 2,
   hints: 'ja, zh',
   mic: 'glasses',
   quietMin: 2,
@@ -73,7 +76,17 @@ export function initialDefaults(): Settings {
 export async function loadSettings(bridge: EvenAppBridge): Promise<Settings> {
   const raw = await kvGet(bridge, KEY)
   if (raw) {
-    try { return { ...initialDefaults(), ...(JSON.parse(raw) as Partial<Settings>) } } catch { /* 当作没存过 */ }
+    try {
+      const saved = JSON.parse(raw) as Partial<Settings>
+      // 0.1.12 起默认从「快」改成「准」。老版本存下来的设置里一律是「快」（分不出是自己选的还是当时的默认），
+      // 所以升级后的第一次统一改成「准」；之后用户再选什么就是什么
+      if (saved.epV !== 2) {
+        if (saved.endpoint !== false) console.log('[settings] 定稿方式：按新默认改成「准」')
+        saved.endpoint = false
+        saved.epV = 2
+      }
+      return { ...initialDefaults(), ...saved }
+    } catch { /* 当作没存过 */ }
   }
   return initialDefaults()
 }

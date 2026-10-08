@@ -90,8 +90,8 @@ export function mountUi(settings: Settings, h: UiHandlers) {
         <div class="field">
           <label for="endpoint">${t('endpoint')}</label>
           <select id="endpoint">
-            <option value="on"${sel('on', settings.endpoint ? 'on' : 'off')}>${t('endpoint.on')}</option>
             <option value="off"${sel('off', settings.endpoint ? 'on' : 'off')}>${t('endpoint.off')}</option>
+            <option value="on"${sel('on', settings.endpoint ? 'on' : 'off')}>${t('endpoint.on')}</option>
           </select>
           <p class="hint">${t('endpoint.hint')}</p>
         </div>

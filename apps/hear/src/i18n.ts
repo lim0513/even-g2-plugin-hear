@@ -53,8 +53,8 @@ const D: Record<string, Row> = {
     en: 'For example, when translating Japanese into Chinese, speech that is already Chinese can be left off the glasses; it still appears in the captions on the phone. The language is detected by Soniox and is occasionally wrong.',
   },
   'endpoint': { zh: '一句话什么时候定稿', ja: '発言を確定するタイミング', en: 'When a sentence is finalised' },
-  'endpoint.on': { zh: '快：一停下就定稿（默认）', ja: '速い：止まったらすぐ確定（既定）', en: 'Fast: as soon as the speaker stops (default)' },
-  'endpoint.off': { zh: '准：多等一会儿再定稿', ja: '正確：少し待ってから確定', en: 'Accurate: wait a little longer' },
+  'endpoint.on': { zh: '快：一停下就定稿', ja: '速い：止まったらすぐ確定', en: 'Fast: as soon as the speaker stops' },
+  'endpoint.off': { zh: '准：多等一会儿再定稿（默认）', ja: '正確：少し待ってから確定（既定）', en: 'Accurate: wait a little longer (default)' },
   'endpoint.hint': {
     zh: '「准」对说话人的区分更可靠，也不容易把一句话从中间断开，但每句话的结尾和译文会晚一秒多出来。',
     ja: '「正確」は話者の区別がより確かで、文の途中で切れにくくなりますが、各発言の末尾と訳文が 1 秒あまり遅れて表示されます。',

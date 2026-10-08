@@ -71,6 +71,14 @@ function classify(errorType: string | undefined, code: number | undefined): { re
   }
 }
 
+/**
+ * Key 跟着连接走（WebSocket 的协议列表），不放在第一条消息里 —— 放消息里的老办法 Soniox 已宣布弃用，将来会直接拒绝。
+ * 浏览器的 WebSocket 设不了请求头，所以走协议列表：['soniox-api-key', key]。
+ * 协议列表里的每一项只能是一小类字符；Key 里有别的字符（老格式的临时 Key 带冒号）时 new WebSocket 会直接抛错，
+ * 那种 Key 就还按老办法发
+ */
+const keyInProtocols = (key: string): boolean => /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/.test(key)
+
 export class SonioxSession {
   status: SessionStatus = 'idle'
   segment = 0
@@ -135,7 +143,7 @@ export class SonioxSession {
     if (!this.wantOpen || this.ws) return
     this.setStatus(this.segment === 0 ? 'connecting' : 'reconnecting')
     let ws: WebSocket
-    try { ws = new WebSocket(SONIOX_WS) } catch (e) {
+    try { ws = keyInProtocols(this.cfg.apiKey) ? new WebSocket(SONIOX_WS, ['soniox-api-key', this.cfg.apiKey]) : new WebSocket(SONIOX_WS) } catch (e) {
       this.scheduleRetry(t('sx.connectFail', { e: (e as Error).message }))
       return
     }
@@ -207,7 +215,7 @@ export class SonioxSession {
   private configJson() {
     const context = this.cfg.context
     return {
-      api_key: this.cfg.apiKey,
+      ...(keyInProtocols(this.cfg.apiKey) ? {} : { api_key: this.cfg.apiKey }),
       model: 'stt-rt-v5',
       audio_format: 'pcm_s16le',
       sample_rate: 16000,
