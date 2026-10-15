@@ -2,7 +2,7 @@
   "package_id": "tech.limeng.hear",
   "edition": "202601",
   "name": "Hear",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "min_app_version": "2.2.10",
   "min_sdk_version": "0.0.16",
   "entrypoint": "index.html",
@@ -17,9 +17,10 @@
     },
     {
       "name": "network",
-      "desc": "Streams live audio to Soniox (stt-rt.soniox.com) for real-time transcription and optional translation, using your own Soniox API key. Only if you add a Claude API key: a tap on the glasses sends recent caption text to Anthropic (api.anthropic.com) to get an answer.",
+      "desc": "Sends live audio to Soniox (stt-rt.soniox.com) for captions and translation and, with read-aloud on, the translated text to Soniox (tts-rt.soniox.com) for speech, using your own Soniox key. With a Claude key, a tap on the glasses sends recent captions to Anthropic (api.anthropic.com) for an answer.",
       "whitelist": [
         "wss://stt-rt.soniox.com",
+        "wss://tts-rt.soniox.com",
         "https://stt-rt.soniox.com",
         "https://api.anthropic.com"
       ]

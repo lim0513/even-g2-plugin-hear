@@ -22,9 +22,10 @@ import { Captions } from './captions.ts'
 import { rms, toPcm } from './core/wav.ts'
 import { loadSettings, saveSettings, type Settings } from './settings.ts'
 import { parseHints } from './languages.ts'
-import { mountUi, setStatus, setNote, setDiag, diagShown, setCaptions, setAi } from './ui.ts'
-import { ask, type AiRun } from './ai.ts'
+import { mountUi, setStatus, setNote, setDiag, diagShown, setCaptions, setAi, setModelList } from './ui.ts'
+import { ask, listModels, modelChoices, pickModel, type AiRun } from './ai.ts'
 import { SonioxSession, stats as sonioxStats } from './soniox.ts'
+import { Speaker } from './speak.ts'
 import { SCRIPT, runFake } from './demo-feed.ts'
 import { t, setLang, getLang, resolveLang } from './i18n.ts'
 
@@ -32,6 +33,20 @@ import { t, setLang, getLang, resolveLang } from './i18n.ts'
 type Mode = 'live' | 'paused' | 'quiet'
 let mode: Mode = 'live'
 let session: SonioxSession | null = null
+/** 朗读译文（开着翻译、开了朗读、正在听的时候才有） */
+let speaker: Speaker | null = null
+let speakerSig = ''
+/** 手机页面上的朗读开关（不保存，每次打开都是关的） */
+let speakOn = false
+/** 放声音用的。只在用户点朗读开关的那一下建（iOS 要求），之后一直留着 */
+let audioCtx: AudioContext | null = null
+/**
+ * 声音的出口：AudioContext → MediaStream → 这个 <audio>。不直接接扬声器，是想让 iOS 把它当成「正在播放的媒体」，
+ * 息屏后也不停（直接接扬声器的话，真机上一息屏就没声了）。在点开关的那一下开始放，之后一直放着（没话时是静音）。
+ * 这个元素放不起来的话，退回直接接扬声器
+ */
+let audioEl: HTMLAudioElement | null = null
+let audioOut: AudioNode | null = null
 let segmentBase = 0
 let notice = ''
 let micOpen = false
@@ -425,7 +440,7 @@ function openSession() {
     strict: settings.hintsStrict,
     endpoint: settings.endpoint,
   }, {
-    onResponse: (r, seg) => feedCaptions(r, seg),
+    onResponse: (r, seg) => { feedCaptions(r, seg); speaker?.feed(r) },
     onNet: (slow) => {
       netSlow = slow
       if (slow) setNote(t('note.netSlow'), 'warn')
@@ -452,7 +467,25 @@ function closeSession(): Promise<void> {
   return s.stop()
 }
 
+// ── 朗读 ──
+/** 按现在的设置和状态开、关、重建朗读。在 syncStatus 里调：模式、设置一变都会经过那里 */
+function syncSpeaker() {
+  const want = !!settings.apiKey && translating() && speakOn && !!audioCtx && mode === 'live'
+  const sig = want ? [settings.apiKey, settings.target].join('|') : ''
+  if (sig === speakerSig) return
+  speaker?.stop()
+  speaker = null
+  speakerSig = sig
+  console.log(`[tts] 朗读 ${want ? '开' : '关'}（开关 ${speakOn ? '开' : '关'} · 翻译 ${translating() ? settings.target : '关'} · ${mode} · 声音 ${audioCtx?.state ?? '没建'}）`)
+  if (!want) return
+  speaker = new Speaker(settings.apiKey, settings.target, 'Adrian', audioCtx!, audioOut!, {
+    onError: (e) => setNote(e === 'key' ? t('note.speakKey') : e === 'budget' ? t('note.speakBudget') : t('note.speakFail', { e }), 'warn'),
+  })
+  speaker.warm()
+}
+
 function syncStatus() {
+  syncSpeaker()
   if (!settings.apiKey) { setStatus('setup'); return }
   if (mode === 'paused') { setStatus('paused'); return }
   if (mode === 'quiet') { setStatus('quiet'); return }
@@ -541,6 +574,28 @@ bridge.onEvenHubEvent((event) => {
   if (types.includes(OsEventTypeList.CLICK_EVENT)) toggleAi()
 })
 
+/**
+ * 启动时在后台查一次 Claude 的模型列表。模型会被官方下线：用户选过之后不再进设置的话，
+ * 哪天它没了，眼镜单击那一下只会报错。所以每次打开都看一眼 —— 选的那个已经不在列表里，就换到默认的并说一声。
+ * 查不到（没填 Key、没网、接口被拦）什么都不做
+ */
+async function checkModel() {
+  const key = settings.claudeKey
+  if (!key) return
+  const found = await listModels(key)
+  console.log('[ai] 模型列表查到 ' + found.length + ' 个')
+  if (!found.length || settings.claudeKey !== key) return   // 查的这几百毫秒里换了 Key：不管了
+  const was = settings.claudeModel
+  const picked = pickModel(modelChoices(found), was)
+  settings = { ...settings, claudeModels: found, claudeModel: picked }
+  setModelList(key, found, picked)
+  // 列表每次都存：保存设置那一下列表可能还没查回来（填完 Key 直接点保存），不存的话下次打开设置还是后备的那三个
+  void saveSettings(bridge, settings)
+  if (picked === was) return
+  console.log('[ai] 模型 ' + was + ' 已不在列表里，换成 ' + picked)
+  setNote(t('ai.modelSwitched', { from: was, to: picked }), 'warn')
+}
+
 // ── 启动 ──
 const handlers: Parameters<typeof mountUi>[1] = {
   onSave: (next) => {
@@ -548,13 +603,49 @@ const handlers: Parameters<typeof mountUi>[1] = {
     void saveSettings(bridge, next).then((ok) => { if (!ok) setStatus('error', t('note.settingsNotSaved')) })
     if (lang !== getLang()) { setLang(lang); mountUi(next, handlers); void mount(bridge) }
     applySettings(next)
+    // 保存之后用（可能是新填的）Key 查一遍模型列表，查到就换掉下拉框并存下来
+    void checkModel()
   },
   onPause: togglePause,
+  // 朗读开关：在点击里把声音建好、恢复（iOS 只认用户操作里的这一步），然后按状态开关朗读
+  onSpeak: (on) => {
+    speakOn = on
+    if (on) {
+      if (!audioCtx) {
+        const AC = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+        audioCtx = new AC()
+        audioCtx.addEventListener('statechange', () => console.log('[tts] 声音状态', audioCtx?.state, document.visibilityState))
+        try {
+          const dest = audioCtx.createMediaStreamDestination()
+          audioEl = document.createElement('audio')
+          audioEl.setAttribute('playsinline', '')
+          audioEl.srcObject = dest.stream
+          audioOut = dest
+        } catch (e) {
+          console.warn('[tts] 接不上 <audio>，直接用扬声器：', (e as Error).message)
+          audioOut = audioCtx.destination
+        }
+      }
+      void audioCtx.resume().catch(() => {})
+      if (audioEl) {
+        audioEl.play().catch((e: Error) => {
+          console.warn('[tts] <audio> 放不起来，改为直接用扬声器：', e.message)
+          audioEl = null
+          audioOut = audioCtx!.destination
+          speakerSig = ''   // 让下面用新的出口重建
+          syncSpeaker()
+        })
+      }
+    }
+    else audioEl?.pause()
+    syncSpeaker()
+  },
   // 手机上的「清屏」清的也是眼镜。手机上的记录任何时候都不清
   onClear: () => { captions.clearScreen(); void render() },
 }
 mountUi(settings, handlers)
 await mount(bridge)
+void checkModel()
 // 启动时不自动开听：Soniox 按连接时长计费，由用户按「开始」（手机）或单击（眼镜）再连
 mode = 'paused'
 if (settings.apiKey) { setStatus('paused'); setNote(t('note.pressStart')); void render() }
@@ -603,7 +694,8 @@ setInterval(() => {
     const line = `mic ${mic} · stt ${stt} · net ${((session?.buffered ?? 0) / 1024).toFixed(0)}k`
       + ` · draw ${diag.drawMs}ms x${diag.draws} · tick +${Math.max(0, diag.tickLate)}ms · ${document.visibilityState}`
       + ` · drop ${(sonioxStats.droppedMs / 1000).toFixed(1)}s · reset ${sonioxStats.resets} · micreset ${diag.micResets}`
-    const line2 = `${tokLine()} · ep ${settings.endpoint ? 'on' : 'off'} · tr ${translating() ? settings.target : 'off'}`
+    const sp = speaker ? ` · tts ${speaker.stats.spoken}/drop ${speaker.stats.dropped} ${speaker.stats.lastMs}ms · ac ${audioCtx?.state ?? '-'} · el ${audioEl ? (audioEl.paused ? 'paused' : 'play') : 'none'}` : ''
+    const line2 = `${tokLine()} · ep ${settings.endpoint ? 'on' : 'off'} · tr ${translating() ? settings.target : 'off'}${sp}`
     setDiag(line + String.fromCharCode(10) + line2)
     console.log('[diag]', line, '|', line2)
   }
@@ -627,9 +719,11 @@ setInterval(() => {
 // 所以停顿够长（FINALIZE_PAUSE_MS）就替它发一次定稿指令。停顿取长一点是有意的 —— 定稿前给模型的音频上下文越足，
 // 说话人区分越准，这正是关掉端点检测想换来的东西（和 meeting-notes 同一做法、同一个值）
 const FINALIZE_PAUSE_MS = 1200
+/** 开着朗读时停顿多久就定稿：要的是开口快，分人准不准其次（用户实测嫌朗读开口晚） */
+const FINALIZE_PAUSE_SPEAK_MS = 600
 setInterval(() => {
   if (settings.endpoint || !session || mode !== 'live' || !spokeSinceFinalize) return
-  if (Date.now() - lastVoiceAt >= FINALIZE_PAUSE_MS) {
+  if (Date.now() - lastVoiceAt >= (speaker ? FINALIZE_PAUSE_SPEAK_MS : FINALIZE_PAUSE_MS)) {
     spokeSinceFinalize = false
     session.finalize()
   }

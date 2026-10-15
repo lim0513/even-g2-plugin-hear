@@ -10,43 +10,62 @@ import Anthropic from '@anthropic-ai/sdk'
 
 export type AiModelInfo = { id: string; name: string }
 /**
- * 内置的三个：查不到模型列表时（没填 Key、没网、接口被拦）用它们，查到了也排在最前面。
- * 能选的模型不是写死的 —— 设置页打开时用用户的 Key 问一遍「现在能用哪些」（listModels），新出的模型会自己出现
+ * 能选哪些模型**以接口返回的为准**：设置页打开时用用户的 Key 问一遍（listModels），新出的模型会自己出现，
+ * 官方标了停用／下线日期的不列。这三个只是后备 —— 没填 Key、没网、接口被拦，查不到的时候用。
+ * （和 meeting-notes 的 ai.ts 同一做法）
  */
-export const AI_MODELS: readonly AiModelInfo[] = [
+const FALLBACK_MODELS: readonly AiModelInfo[] = [
   { id: 'claude-opus-5-5', name: 'Claude Opus 5.5' },
   { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5' },
-  { id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5' },
+  { id: 'claude-haiku-5-5', name: 'Claude Haiku 5.5' },
 ]
 export type AiModel = string
 export const DEFAULT_AI_MODEL: AiModel = 'claude-opus-5-5'
 export const isAiModel = (v: string): v is AiModel => /^claude-[a-z0-9.-]+$/.test(v)
 
-/**
- * 内置的排前面，查到的其余模型跟在后面。查到的 id 常带日期（claude-haiku-4-5-20251001）：
- * 和内置的是同一个模型，不重复列。keep＝正在用的那个，不在列表里也留着，不悄悄换成别的
- */
-export function mergeModels(found: readonly AiModelInfo[], keep = ''): AiModelInfo[] {
-  const list: AiModelInfo[] = [...AI_MODELS]
-  for (const f of found) {
-    if (!isAiModel(f.id)) continue
-    if (!list.some((m) => f.id === m.id || f.id.startsWith(m.id + '-'))) list.push({ id: f.id, name: f.name || f.id })
-  }
-  if (keep && isAiModel(keep) && !list.some((m) => m.id === keep)) list.push({ id: keep, name: keep })
-  return list
+/** 下拉框里列哪些：查到了就用查到的（已经滤过，新的在前），没查到用后备的 */
+export function modelChoices(found: readonly AiModelInfo[]): AiModelInfo[] {
+  const ok = found.filter((m) => isAiModel(m.id))
+  return ok.length ? ok : [...FALLBACK_MODELS]
 }
 
-/** 这把 Key 现在能用的模型，新的在前。查不到返回空数组（调用方就用内置的） */
+/**
+ * 选中哪个：原来选的还在列表里就保持；不在了（多半是被官方标了停用，从列表里滤掉了）就落到默认的，
+ * 默认的也不在就用列表第一个（最新的）
+ */
+export function pickModel(list: readonly AiModelInfo[], want: string): AiModel {
+  if (list.some((m) => m.id === want)) return want
+  // 以前存的是不带日期的别名（claude-haiku-4-5），接口给的是带日期的（claude-haiku-4-5-20251001）：是同一个模型，
+  // 别因为名字对不上就悄悄换成默认的（默认是 Opus，贵得多）
+  const dated = list.find((m) => m.id.startsWith(want + '-') && /^\d{8}$/.test(m.id.slice(want.length + 1)))
+  if (want && dated) return dated.id
+  if (list.some((m) => m.id === DEFAULT_AI_MODEL)) return DEFAULT_AI_MODEL
+  return list[0]?.id ?? DEFAULT_AI_MODEL
+}
+
+// 模型列表接口带「生命周期」字段（2026-10 实测；SDK 的类型定义里还没有，所以按原始 JSON 读）：
+// lifecycle: 'active' | …，deprecated_at / retires_at：标了停用就有日期
+type ModelRaw = { id: string; display_name?: string; lifecycle?: string | null; deprecated_at?: string | null; retires_at?: string | null }
+
+/** 从接口的原始列表里挑出能选的（接口本来就是新的在前）。单独拎出来是为了能不连网测 */
+export function filterModels(raw: readonly ModelRaw[]): AiModelInfo[] {
+  return raw
+    .filter((m) => isAiModel(m.id))
+    .filter((m) => (m.lifecycle ?? 'active') === 'active' && !m.deprecated_at && !m.retires_at)
+    .map((m) => ({ id: m.id, name: m.display_name || m.id }))
+}
+
+/** 这把 Key 现在能用的模型：新的在前，官方标了停用／下线的不列。查不到返回空数组（调用方用后备的） */
 export async function listModels(apiKey: string): Promise<AiModelInfo[]> {
   if (!apiKey) return []
   try {
     const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true, maxRetries: 1, timeout: 10_000 })
-    const out: AiModelInfo[] = []
+    const raw: ModelRaw[] = []
     for await (const m of client.models.list({ limit: 100 })) {
-      out.push({ id: m.id, name: m.display_name || m.id })
-      if (out.length >= 100) break
+      raw.push(m as unknown as ModelRaw)
+      if (raw.length >= 200) break
     }
-    return out
+    return filterModels(raw)
   } catch (e) {
     console.warn('[ai] 模型列表没查到：', e instanceof Error ? e.message : e)
     return []
@@ -60,7 +79,19 @@ export async function listModels(apiKey: string): Promise<AiModelInfo[]> {
 const plainModels = new Set<string>()
 const isPlain = (model: string) => model.includes('haiku') || plainModels.has(model)
 
-export type AiErrorKind = 'auth' | 'rate' | 'net' | 'refusal' | 'other'
+
+/**
+ * 余额不足单独一类。Anthropic 来的是 400（正文 "Your credit balance is too low…"）或 402 billing_error，
+ * OpenAI 是 insufficient_quota / credit_balance_exhausted。不认出来的话，400 会被当成"模型不认参数"白重发一次，
+ * 最后显示成一段截断的 JSON，用户看不出是没钱了
+ */
+export const isBilling = (s: string) => /credit.balance|billing|insufficient_quota|quota_exceeded|current quota|no credits/i.test(s)
+/** SDK 的 e.message 是「状态码 + 整段 JSON」，给人看的只取里面那句 message */
+function apiDetail(e: InstanceType<typeof Anthropic.APIError>): string {
+  const body = e.error as { error?: { type?: string; message?: string } } | undefined
+  return [body?.error?.type, body?.error?.message].filter(Boolean).join(': ') || e.message
+}
+export type AiErrorKind = 'auth' | 'rate' | 'billing' | 'net' | 'refusal' | 'other'
 export type AiResult = {
   text: string
   /** 从发出请求到第一个字回来（毫秒）；一个字都没回来是 null */
@@ -138,6 +169,7 @@ export function ask(o: { apiKey: string; model: AiModel; lang: string; transcrip
     } catch (e) {
       const totalMs = Date.now() - t0
       if (aborted || e instanceof Anthropic.APIUserAbortError) return { text, firstMs, totalMs, model, aborted: true }
+      if (e instanceof Anthropic.APIError && isBilling(apiDetail(e))) return { text, firstMs, totalMs, model, error: { kind: 'billing', detail: apiDetail(e) } }
       if (e instanceof Anthropic.BadRequestError && !retried && !text) {
         retried = true
         plainModels.add(o.model)
@@ -151,7 +183,7 @@ export function ask(o: { apiKey: string; model: AiModel; lang: string; transcrip
       }
       if (e instanceof Anthropic.RateLimitError) return { text, firstMs, totalMs, model, error: { kind: 'rate', detail: e.message } }
       if (e instanceof Anthropic.APIConnectionError) return { text, firstMs, totalMs, model, error: { kind: 'net', detail: e.message } }
-      if (e instanceof Anthropic.APIError) return { text, firstMs, totalMs, model, error: { kind: 'other', detail: `${e.status ?? ''} ${e.message}`.trim() } }
+      if (e instanceof Anthropic.APIError) return { text, firstMs, totalMs, model, error: { kind: 'other', detail: `${e.status ?? ''} ${apiDetail(e)}`.trim() } }
       return { text, firstMs, totalMs, model, error: { kind: 'other', detail: e instanceof Error ? e.message : String(e) } }
     }
   }

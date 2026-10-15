@@ -10,7 +10,7 @@ const q = new URLSearchParams(location.search)
 const view = q.get('view') ?? 'live'
 setLang(resolveLang(q.get('lang') ?? 'zh'))
 const settings: Settings = { ...initialDefaults(), apiKey: view === 'first' ? '' : 'demo-key', translate: view !== 'plain', target: 'zh', hints: 'ja, zh' }
-mountUi(settings, { onSave: (s) => console.log('save', s), onPause: () => console.log('pause'), onClear: () => console.log('clear') })
+mountUi(settings, { onSave: (s) => console.log('save', s), onPause: () => console.log('pause'), onClear: () => console.log('clear'), onSpeak: (on) => console.log('speak', on) })
 
 const talk: Item[] = [
   { kind: 'say', src: 'おはようございます。', dst: '早上好。', turn: false },

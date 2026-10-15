@@ -24,12 +24,17 @@ import type { Settings } from './settings.ts'
 import type { Item } from './captions.ts'
 import { LANGUAGES, LANG_CODES, parseHints } from './languages.ts'
 import { t, LANGS, LANG_NAMES } from './i18n.ts'
-import { DEFAULT_AI_MODEL, isAiModel, listModels, mergeModels, type AiModelInfo } from './ai.ts'
+import { listModels, modelChoices, pickModel, type AiModelInfo } from './ai.ts'
 
 export type Status = 'live' | 'paused' | 'connecting' | 'reconnecting' | 'quiet' | 'setup' | 'error'
 
 export type UiHandlers = {
   onSave: (s: Settings) => void
+  /**
+   * 朗读开关被点了。**在点击的处理函数里同步调**：iOS 只让用户操作里建起来（或恢复）的声音出声，
+   * main 要在这里面把 AudioContext 建好
+   */
+  onSpeak: (on: boolean) => void
   onPause: () => void
   onClear: () => void
 }
@@ -56,6 +61,11 @@ let shownSig: string[] = []
 /** 状态下面那一行平时的内容；被临时提示盖住之后要换回来 */
 let note: { text: string; kind: 'hint' | 'warn' } = { text: '', kind: 'hint' }
 let flashTimer: ReturnType<typeof setTimeout> | null = null
+/**
+ * 朗读译文开着没有。**不保存**：每次打开都是关的，要用户在手机上点一下才开 ——
+ * 一是免得没想到的时候从手机外放出声，二是那一下点击正好满足 iOS「页面被点过才能出声」的要求
+ */
+let speakOn = false
 let styled = false
 let fitted = false
 
@@ -95,6 +105,7 @@ export function mountUi(settings: Settings, h: UiHandlers) {
         <button id="clear" type="button" class="plain">${t('clear')}</button>
         <button id="open" type="button" class="plain">${t('settings')}</button>
       </div>
+      <div id="speak-row" class="line speak-row" hidden><label class="what" for="speak">${t('speak')}<small>${t('speak.one')}</small></label>${sw('speak', speakOn)}</div>
     </div>
 
     <section id="ai-box" class="ai-live" hidden>
@@ -144,7 +155,7 @@ export function mountUi(settings: Settings, h: UiHandlers) {
 
       <div class="group"><h3>${t('ai.title')}</h3>
         ${field(t('ai.key'), t('ai.hint'), `<input id="claudeKey" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" value="${esc(settings.claudeKey)}" />`, 'claudeKey')}
-        ${line(t('ai.model'), '', `<select id="claudeModel">${mergeModels(settings.claudeModels ?? [], settings.claudeModel).map((m) => `<option value="${esc(m.id)}"${sel(m.id, settings.claudeModel)}>${esc(m.name)}</option>`).join('')}</select>`, 'claudeModel')}
+        ${line(t('ai.model'), '', `<select id="claudeModel">${modelOptions(settings.claudeModels ?? [], settings.claudeModel)}</select>`, 'claudeModel')}
       </div>
 
       <div class="group"><h3>${t('grp.key')}</h3>
@@ -156,12 +167,13 @@ export function mountUi(settings: Settings, h: UiHandlers) {
     </section>
     </div>`
 
-  for (const id of ['state', 'mark', 'status', 'note', 'diag', 'acts', 'pause', 'open', 'ai-box', 'ai-info', 'ai-text', 'first', 'log', 'cap-list', 'cap-empty', 'sheet']) el[id] = $(id)
+  for (const id of ['state', 'mark', 'status', 'note', 'diag', 'acts', 'speak-row', 'pause', 'open', 'ai-box', 'ai-info', 'ai-text', 'first', 'log', 'cap-list', 'cap-empty', 'sheet']) el[id] = $(id)
   shownSig = []
   // 点版本号：开关诊断读数（排查「用久了延迟变高」用，平时不显示）。读数出在状态下面
   $('ver').onclick = () => { diagOn = !diagOn; el.diag.hidden = !diagOn; el.diag.textContent = '' }
   $<HTMLButtonElement>('pause').onclick = () => handlers.onPause()
   $<HTMLButtonElement>('clear').onclick = () => handlers.onClear()
+  $<HTMLInputElement>('speak').onchange = (e) => { speakOn = (e.target as HTMLInputElement).checked; handlers.onSpeak(speakOn) }
   // 设置：正在听的时候进不去。按钮不真的 disabled（那样点了没有任何反应，不知道为什么），而是点了告诉你要先暂停
   $<HTMLButtonElement>('open').onclick = () => {
     if (locked) { flash(t('settings.locked')); return }
@@ -171,6 +183,9 @@ export function mountUi(settings: Settings, h: UiHandlers) {
   }
   // 填完 Claude Key 离开输入框：用新 Key 再查一次
   $<HTMLInputElement>('claudeKey').addEventListener('change', () => void refreshModels())
+  // 粘贴／输入停手 0.8 秒也查：手机上填完直接点保存，change 来得太晚
+  let keyTimer = 0
+  $<HTMLInputElement>('claudeKey').addEventListener('input', () => { clearTimeout(keyTimer); keyTimer = window.setTimeout(() => void refreshModels(), 800) })
 
   // 第一次打开：填 Key → 保存 → 直接开始
   const firstKey = $<HTMLInputElement>('firstKey')
@@ -225,7 +240,7 @@ export function mountUi(settings: Settings, h: UiHandlers) {
       quietMin: Math.max(0, Math.min(60, Number($<HTMLInputElement>('quiet').value) || 0)),
       clearSec: Math.max(0, Math.min(600, Math.round(Number($<HTMLInputElement>('clearSec').value) || 0))),
       claudeKey: $<HTMLInputElement>('claudeKey').value.trim(),
-      claudeModel: (() => { const v = $<HTMLSelectElement>('claudeModel').value; return isAiModel(v) ? v : DEFAULT_AI_MODEL })(),
+      claudeModel: pickModel(modelChoices(cur.claudeModels ?? []), $<HTMLSelectElement>('claudeModel').value),
     }
     cur = next
     view = 'log'
@@ -243,6 +258,13 @@ export function mountUi(settings: Settings, h: UiHandlers) {
 // ── Claude 的模型列表：打开设置时按 Key 实际查一遍 ──
 // 查到了就换掉下拉框里的选项（正在选的那个保持选中），并记在 cur 里，下次保存时一起存下来；
 // 查不到（没填 Key、没网、接口被拦）就保持原样，不打扰
+/** 设置页第一次画下拉框：用上次查到的列表（没有就用后备的），选中项不在列表里就落到默认 */
+function modelOptions(cached: AiModelInfo[], model: string): string {
+  const list = modelChoices(cached)
+  const picked = pickModel(list, model)
+  return list.map((m) => `<option value="${esc(m.id)}"${m.id === picked ? ' selected' : ''}>${esc(m.name)}</option>`).join('')
+}
+
 let modelsFor = ''
 async function refreshModels() {
   const key = ($<HTMLInputElement>('claudeKey')?.value ?? '').trim()
@@ -251,11 +273,27 @@ async function refreshModels() {
   if (!found.length) return
   modelsFor = key
   cur = { ...cur, claudeModels: found }
+  fillModels(found, $<HTMLSelectElement>('claudeModel')?.value ?? '')
+}
+
+/**
+ * main 在启动时后台查到模型列表后调（设置没打开过也先把下拉框换好）。
+ * key＝查的时候用的那把 Key（同一把 Key 打开设置时就不再重复查）
+ */
+export function setModelList(key: string, found: AiModelInfo[], picked: string) {
+  modelsFor = key
+  cur = { ...cur, claudeModels: found, claudeModel: picked }
+  fillModels(found, picked)
+}
+
+/** 把下拉框换成这份列表。want＝想选中的；还在列表里就保持，不在了（被官方标了停用）就落到默认的 */
+function fillModels(found: AiModelInfo[], want: string) {
   const box = $<HTMLSelectElement>('claudeModel')
   if (!box) return
-  const picked = box.value
+  const list = modelChoices(found)
+  const picked = pickModel(list, want)
   box.textContent = ''
-  for (const m of mergeModels(found, picked)) {
+  for (const m of list) {
     const o = document.createElement('option')
     o.value = m.id
     o.textContent = m.name
@@ -272,6 +310,8 @@ function syncView() {
   const settings = !first && view === 'settings'
   el.first.hidden = !first
   el.acts.hidden = first
+  // 朗读只在开着翻译时有意义：不翻译就不显示这个开关
+  el['speak-row'].hidden = first || !(cur.translate && !!cur.target)
   el.sheet.hidden = !settings
   el.log.hidden = first || settings
   el.open.textContent = t(settings ? 'close' : 'settings')
@@ -458,6 +498,7 @@ function injectStyles() {
     .sub.say { color: var(--text); }
     .diag { margin: 6px 0 0; font: 11px/1.5 ui-monospace, Menlo, Consolas, monospace; color: var(--dim); white-space: pre-wrap; letter-spacing: 0; }
     .acts { display: flex; gap: 10px; margin-top: 16px; }
+    .speak-row { margin: 14px 0 0; }
     .acts button, .sheet-head button, .key-wrap button { height: 48px; padding: 0 16px; border-radius: 12px; font-size: 16px; font-weight: 500; white-space: nowrap; }
     .go { flex: 1; background: var(--accent); color: var(--on-accent); border: 0; font-weight: 600; }
     .stop { flex: 1; background: var(--input); color: var(--text); border: 0; }
